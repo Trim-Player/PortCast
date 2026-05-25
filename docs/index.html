@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PortCast &mdash; portable podcast listening history</title>
+  <meta name="description" content="PortCast is an open protocol for porting podcast subscriptions and listening history between podcast apps. Created by Trimplayer." />
+  <meta property="og:title" content="PortCast" />
+  <meta property="og:description" content="An open protocol for portable podcast subscriptions and listening history." />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content="https://portcast.org" />
+  <link rel="canonical" href="https://portcast.org" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <a class="brand" href="/">
+        <img src="favicon.svg" alt="" width="28" height="28" />
+        <span>PortCast</span>
+      </a>
+      <nav>
+        <a href="#what">What</a>
+        <a href="#why">Why</a>
+        <a href="#spec">Spec</a>
+        <a href="#implement">Implement</a>
+        <a href="https://github.com/Trim-Player/PortCast" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div class="wrap">
+        <p class="eyebrow">Open protocol &middot; v0.1.0 draft</p>
+        <h1>Take your podcast<br/>listening history with&nbsp;you.</h1>
+        <p class="lede">
+          PortCast is a small, open JSON protocol for exporting and importing a listener&rsquo;s
+          podcast <strong>subscriptions</strong>, <strong>play state</strong>,
+          <strong>queue</strong>, <strong>bookmarks</strong>, and
+          <strong>preferences</strong> &mdash; so changing apps doesn&rsquo;t mean starting over.
+        </p>
+        <div class="cta">
+          <a class="btn primary" href="https://github.com/Trim-Player/PortCast/blob/main/SPECIFICATION.md">Read the spec</a>
+          <a class="btn" href="https://github.com/Trim-Player/PortCast">View on GitHub</a>
+        </div>
+        <p class="origin">
+          Created by <a href="https://trimplayer.com">Trimplayer</a>.
+          Free for anyone to implement.
+        </p>
+      </div>
+    </section>
+
+    <section id="what" class="band">
+      <div class="wrap">
+        <h2>One file. Everything that matters.</h2>
+        <div class="grid">
+          <div class="card">
+            <h3>Subscriptions</h3>
+            <p>Feeds with tags, identifiers, follow dates &mdash; identified by <code>&lt;podcast:guid&gt;</code> when available.</p>
+          </div>
+          <div class="card">
+            <h3>Episode state</h3>
+            <p><code>unplayed</code> &middot; <code>in_progress</code> &middot; <code>completed</code> &middot; <code>archived</code>, plus position, play count, ratings, stars.</p>
+          </div>
+          <div class="card">
+            <h3>Playback events</h3>
+            <p>Optional event log &mdash; play, pause, seek, speed change &mdash; so apps can reconstruct how an episode was actually consumed.</p>
+          </div>
+          <div class="card">
+            <h3>Queue</h3>
+            <p>Ordered &ldquo;up next&rdquo; that survives switching apps.</p>
+          </div>
+          <div class="card">
+            <h3>Bookmarks &amp; clips</h3>
+            <p>Time-stamped notes inside an episode. Promote to a clip with an end timestamp.</p>
+          </div>
+          <div class="card">
+            <h3>Preferences</h3>
+            <p>Global and per-feed: playback rate, skip intro/outro, trim silence, auto-download policy.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="why" class="band alt">
+      <div class="wrap two-col">
+        <div>
+          <h2>Why a new protocol?</h2>
+          <p>
+            OPML rescues your subscriptions, and nothing else. Per-app exports
+            (Apple, Spotify, Pocket Casts) ship in different, mostly-private
+            shapes. There is no neutral, listener-owned format for the rest
+            of the relationship a listener builds with their podcasts.
+          </p>
+          <p>PortCast aims to be:</p>
+          <ul>
+            <li><strong>Vendor-neutral.</strong> No central server, no required account. The user owns the file.</li>
+            <li><strong>Identity-correct.</strong> Matches podcasts by the
+              <a href="https://podcastindex.org/namespace/1.0#guid">podcast:guid</a>
+              standard, with <code>feedUrl</code> fallback. Matches episodes
+              by RSS item <code>&lt;guid&gt;</code>, with <code>enclosureUrl</code> fallback.</li>
+            <li><strong>Lossless within scope, extensible outside it.</strong>
+              Anything outside the spec lives under a reverse-DNS-keyed
+              <code>extensions</code> block that every consumer must preserve.</li>
+            <li><strong>Tiny.</strong> One JSON file. One schema. No required dependency on any podcast directory.</li>
+          </ul>
+        </div>
+        <div>
+          <pre><code>{
+  "portcast": "0.1.0",
+  "generatedAt": "2026-05-26T14:00:00Z",
+  "generator": { "name": "Trimplayer", "version": "3.4.1" },
+  "subscriptions": [
+    {
+      "subscriptionId": "01HXYZ...",
+      "feedUrl": "https://feeds.example.com/pl.xml",
+      "podcastGuid": "917393e3-1b1e-5cef-ace4-edaa54e1f810",
+      "title": "Portable Listening Weekly",
+      "tags": ["tech"],
+      "updatedAt": "2026-05-26T14:00:00Z"
+    }
+  ],
+  "episodes": [
+    {
+      "subscriptionRef": { "podcastGuid": "917393e3-..." },
+      "guid": "https://feeds.example.com/pl/ep/42",
+      "status": "in_progress",
+      "positionSeconds": 1245.2,
+      "lastPlayedAt": "2026-05-25T08:11:00Z",
+      "updatedAt": "2026-05-25T08:11:00Z"
+    }
+  ]
+}</code></pre>
+        </div>
+      </div>
+    </section>
+
+    <section id="spec" class="band">
+      <div class="wrap">
+        <h2>Spec &amp; schema</h2>
+        <p>
+          The protocol is defined in
+          <a href="https://github.com/Trim-Player/PortCast/blob/main/SPECIFICATION.md">SPECIFICATION.md</a>
+          and machine-validated by a
+          <a href="https://github.com/Trim-Player/PortCast/blob/main/schema/portcast.schema.json">JSON Schema (draft 2020-12)</a>.
+          A realistic
+          <a href="https://github.com/Trim-Player/PortCast/blob/main/examples/sample-export.portcast.json">sample document</a>
+          ships in the repo. The spec is published under
+          <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>;
+          the reference code under MIT.
+        </p>
+      </div>
+    </section>
+
+    <section id="implement" class="band alt">
+      <div class="wrap">
+        <h2>Implement it</h2>
+        <p>
+          A Python reference implementation lives in
+          <a href="https://github.com/Trim-Player/PortCast/tree/main/reference"><code>reference/</code></a>:
+          dataclass models, schema-driven validator, OPML &harr; PortCast bridge, and a CLI.
+        </p>
+<pre><code>git clone https://github.com/Trim-Player/PortCast.git
+cd PortCast/reference
+pip install -e ".[dev]"
+
+portcast validate              ../examples/sample-export.portcast.json
+portcast opml-to-portcast      my-subs.opml -o my.portcast.json
+portcast inspect               my.portcast.json
+</code></pre>
+        <p>
+          Building an importer or exporter for another podcast app, or an
+          implementation in another language? Open an issue &mdash; we&rsquo;d like
+          to link your work here.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      <p>
+        PortCast &mdash; an open protocol by
+        <a href="https://trimplayer.com">Trimplayer</a>.
+        <a href="https://github.com/Trim-Player/PortCast">Source on GitHub</a>.
+      </p>
+      <p class="fine">
+        Spec licensed <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>.
+        Reference code licensed MIT.
+      </p>
+    </div>
+  </footer>
+</body>
+</html>

@@ -1,0 +1,257 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portcast.org/schema/0.1.0/portcast.schema.json",
+  "title": "PortCast Document",
+  "description": "Root container for an exported PortCast document.",
+  "type": "object",
+  "required": ["portcast", "generatedAt", "generator", "subscriptions", "episodes"],
+  "additionalProperties": false,
+  "properties": {
+    "portcast": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "description": "SemVer version of the PortCast spec this document conforms to."
+    },
+    "generatedAt": { "$ref": "#/$defs/Timestamp" },
+    "generator": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "properties": {
+        "name":    { "type": "string", "minLength": 1 },
+        "version": { "type": "string" },
+        "url":     { "type": "string", "format": "uri" }
+      }
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "displayName": { "type": "string" },
+        "email":       { "type": "string", "format": "email" }
+      }
+    },
+    "subscriptions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Subscription" }
+    },
+    "episodes": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/EpisodeState" }
+    },
+    "queue": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/QueueItem" }
+    },
+    "bookmarks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/Bookmark" }
+    },
+    "preferences": { "$ref": "#/$defs/Preferences" },
+    "extensions":  { "$ref": "#/$defs/Extensions" }
+  },
+
+  "$defs": {
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp in UTC."
+    },
+    "PodcastGuid": {
+      "type": "string",
+      "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "Extensions": {
+      "type": "object",
+      "description": "Namespaced extension data. Keys are reverse-DNS strings.",
+      "propertyNames": { "pattern": "^[a-zA-Z0-9_-]+(\\.[a-zA-Z0-9_-]+)+$" },
+      "additionalProperties": true
+    },
+
+    "Subscription": {
+      "type": "object",
+      "required": ["subscriptionId", "title", "updatedAt"],
+      "additionalProperties": false,
+      "properties": {
+        "subscriptionId": { "type": "string", "minLength": 1 },
+        "feedUrl":        { "type": "string", "format": "uri" },
+        "podcastGuid":    { "$ref": "#/$defs/PodcastGuid" },
+        "title":          { "type": "string", "minLength": 1 },
+        "author":         { "type": "string" },
+        "imageUrl":       { "type": "string", "format": "uri" },
+        "subscribedAt":   { "$ref": "#/$defs/Timestamp" },
+        "unsubscribedAt": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/Timestamp" }] },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        },
+        "notificationsEnabled": { "type": "boolean" },
+        "identifiers": {
+          "type": "object",
+          "additionalProperties": { "type": ["string", "number"] }
+        },
+        "updatedAt":   { "$ref": "#/$defs/Timestamp" },
+        "extensions":  { "$ref": "#/$defs/Extensions" }
+      },
+      "anyOf": [
+        { "required": ["feedUrl"] },
+        { "required": ["podcastGuid"] }
+      ]
+    },
+
+    "SubscriptionRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "feedUrl":     { "type": "string", "format": "uri" },
+        "podcastGuid": { "$ref": "#/$defs/PodcastGuid" }
+      },
+      "anyOf": [
+        { "required": ["feedUrl"] },
+        { "required": ["podcastGuid"] }
+      ]
+    },
+
+    "EpisodeRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "guid":          { "type": "string", "minLength": 1 },
+        "enclosureUrl":  { "type": "string", "format": "uri" }
+      },
+      "anyOf": [
+        { "required": ["guid"] },
+        { "required": ["enclosureUrl"] }
+      ]
+    },
+
+    "EpisodeState": {
+      "type": "object",
+      "required": ["episodeStateId", "subscriptionRef", "status", "updatedAt"],
+      "additionalProperties": false,
+      "properties": {
+        "episodeStateId":  { "type": "string", "minLength": 1 },
+        "subscriptionRef": { "$ref": "#/$defs/SubscriptionRef" },
+        "guid":            { "type": "string", "minLength": 1 },
+        "enclosureUrl":    { "type": "string", "format": "uri" },
+        "title":           { "type": "string" },
+        "publishedAt":     { "$ref": "#/$defs/Timestamp" },
+        "durationSeconds": { "type": "number", "minimum": 0 },
+
+        "status": {
+          "type": "string",
+          "enum": ["unplayed", "in_progress", "completed", "archived"]
+        },
+        "positionSeconds": { "type": "number", "minimum": 0 },
+        "playCount":       { "type": "integer", "minimum": 0 },
+        "completedAt":     { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/Timestamp" }] },
+        "firstPlayedAt":   { "$ref": "#/$defs/Timestamp" },
+        "lastPlayedAt":    { "$ref": "#/$defs/Timestamp" },
+        "rating":          { "type": ["number", "null"], "minimum": 0, "maximum": 5 },
+        "starred":         { "type": "boolean" },
+        "hidden":          { "type": "boolean" },
+
+        "events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PlaybackEvent" }
+        },
+
+        "updatedAt":   { "$ref": "#/$defs/Timestamp" },
+        "extensions":  { "$ref": "#/$defs/Extensions" }
+      },
+      "anyOf": [
+        { "required": ["guid"] },
+        { "required": ["enclosureUrl"] }
+      ],
+      "allOf": [
+        {
+          "if":   { "properties": { "status": { "const": "in_progress" } } },
+          "then": { "required": ["positionSeconds"] }
+        }
+      ]
+    },
+
+    "PlaybackEvent": {
+      "type": "object",
+      "required": ["type", "at"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["play", "pause", "seek", "complete", "speed_change", "bookmark"]
+        },
+        "at":                  { "$ref": "#/$defs/Timestamp" },
+        "positionSeconds":     { "type": "number", "minimum": 0 },
+        "fromPositionSeconds": { "type": "number", "minimum": 0 },
+        "speed":               { "type": "number", "exclusiveMinimum": 0 },
+        "bookmarkRef":         { "type": "string" }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if":   { "properties": { "type": { "const": "seek" } } },
+          "then": { "required": ["positionSeconds", "fromPositionSeconds"] }
+        },
+        {
+          "if":   { "properties": { "type": { "const": "speed_change" } } },
+          "then": { "required": ["speed"] }
+        }
+      ]
+    },
+
+    "QueueItem": {
+      "type": "object",
+      "required": ["position", "episodeRef"],
+      "additionalProperties": false,
+      "properties": {
+        "position":   { "type": "integer", "minimum": 1 },
+        "episodeRef": { "$ref": "#/$defs/EpisodeRef" },
+        "addedAt":    { "$ref": "#/$defs/Timestamp" },
+        "source":     { "type": "string" }
+      }
+    },
+
+    "Bookmark": {
+      "type": "object",
+      "required": ["bookmarkId", "episodeRef", "atSeconds", "createdAt"],
+      "additionalProperties": false,
+      "properties": {
+        "bookmarkId": { "type": "string", "minLength": 1 },
+        "episodeRef": { "$ref": "#/$defs/EpisodeRef" },
+        "atSeconds":  { "type": "number", "minimum": 0 },
+        "endSeconds": { "type": "number", "minimum": 0 },
+        "label":      { "type": "string" },
+        "note":       { "type": "string" },
+        "createdAt":  { "$ref": "#/$defs/Timestamp" },
+        "updatedAt":  { "$ref": "#/$defs/Timestamp" }
+      }
+    },
+
+    "Preferences": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "global":  { "$ref": "#/$defs/PreferenceSet" },
+        "perFeed": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/PreferenceSet" }
+        }
+      }
+    },
+
+    "PreferenceSet": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "playbackRate":        { "type": "number", "exclusiveMinimum": 0 },
+        "skipForwardSeconds":  { "type": "number", "minimum": 0 },
+        "skipBackwardSeconds": { "type": "number", "minimum": 0 },
+        "skipIntroSeconds":    { "type": "number", "minimum": 0 },
+        "skipOutroSeconds":    { "type": "number", "minimum": 0 },
+        "trimSilence":         { "type": "boolean" },
+        "boostVoice":          { "type": "boolean" },
+        "autoDownload":        { "type": "string" }
+      }
+    }
+  }
+}

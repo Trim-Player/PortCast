@@ -1,0 +1,158 @@
+{
+  "portcast": "0.1.0",
+  "generatedAt": "2026-05-26T14:00:00Z",
+  "generator": {
+    "name": "Trimplayer",
+    "version": "3.4.1",
+    "url": "https://trimplayer.com"
+  },
+  "owner": {
+    "displayName": "Jonathan"
+  },
+
+  "subscriptions": [
+    {
+      "subscriptionId": "01HXYZJ8K1Q2T0V7P9D2N7R3A1",
+      "feedUrl": "https://feeds.example.com/portable-listening.xml",
+      "podcastGuid": "917393e3-1b1e-5cef-ace4-edaa54e1f810",
+      "title": "Portable Listening Weekly",
+      "author": "Jane Doe",
+      "imageUrl": "https://cdn.example.com/pl/cover.jpg",
+      "subscribedAt": "2024-06-01T09:14:00Z",
+      "unsubscribedAt": null,
+      "tags": ["tech", "weekly-listen"],
+      "notificationsEnabled": true,
+      "identifiers": {
+        "applePodcastsId": "1500000001",
+        "podcastIndexId": "920666"
+      },
+      "updatedAt": "2026-05-26T14:00:00Z"
+    },
+    {
+      "subscriptionId": "01HXYZJ8K1Q2T0V7P9D2N7R3A2",
+      "feedUrl": "https://feeds.example.com/long-walks.xml",
+      "title": "Long Walks",
+      "author": "Sam Patel",
+      "subscribedAt": "2023-01-12T18:00:00Z",
+      "unsubscribedAt": null,
+      "tags": ["narrative"],
+      "notificationsEnabled": false,
+      "updatedAt": "2026-05-20T10:00:00Z"
+    }
+  ],
+
+  "episodes": [
+    {
+      "episodeStateId": "01HXYZJ8K1Q2T0V7P9D2N7R3B1",
+      "subscriptionRef": { "podcastGuid": "917393e3-1b1e-5cef-ace4-edaa54e1f810" },
+      "guid": "https://feeds.example.com/portable-listening/ep/42",
+      "enclosureUrl": "https://cdn.example.com/pl/ep42.mp3",
+      "title": "Episode 42: On Portable Listening",
+      "publishedAt": "2026-05-20T07:00:00Z",
+      "durationSeconds": 3287,
+      "status": "in_progress",
+      "positionSeconds": 1245.2,
+      "playCount": 1,
+      "firstPlayedAt": "2026-05-22T18:30:00Z",
+      "lastPlayedAt": "2026-05-25T08:11:00Z",
+      "starred": true,
+      "hidden": false,
+      "events": [
+        { "type": "play",  "at": "2026-05-22T18:30:00Z", "positionSeconds": 0 },
+        { "type": "pause", "at": "2026-05-22T19:05:12Z", "positionSeconds": 2112 },
+        { "type": "play",  "at": "2026-05-25T08:00:00Z", "positionSeconds": 2112 },
+        { "type": "seek",  "at": "2026-05-25T08:02:00Z", "positionSeconds": 1200, "fromPositionSeconds": 2232 },
+        { "type": "speed_change", "at": "2026-05-25T08:03:00Z", "speed": 1.5 },
+        { "type": "pause", "at": "2026-05-25T08:11:00Z", "positionSeconds": 1245.2 }
+      ],
+      "updatedAt": "2026-05-25T08:11:00Z"
+    },
+    {
+      "episodeStateId": "01HXYZJ8K1Q2T0V7P9D2N7R3B2",
+      "subscriptionRef": { "podcastGuid": "917393e3-1b1e-5cef-ace4-edaa54e1f810" },
+      "guid": "https://feeds.example.com/portable-listening/ep/41",
+      "enclosureUrl": "https://cdn.example.com/pl/ep41.mp3",
+      "title": "Episode 41: Why GUIDs Matter",
+      "publishedAt": "2026-05-13T07:00:00Z",
+      "durationSeconds": 2940,
+      "status": "completed",
+      "positionSeconds": 2940,
+      "playCount": 2,
+      "completedAt": "2026-05-15T20:14:00Z",
+      "firstPlayedAt": "2026-05-13T08:00:00Z",
+      "lastPlayedAt": "2026-05-15T20:14:00Z",
+      "rating": 5,
+      "starred": false,
+      "hidden": false,
+      "updatedAt": "2026-05-15T20:14:00Z"
+    },
+    {
+      "episodeStateId": "01HXYZJ8K1Q2T0V7P9D2N7R3B3",
+      "subscriptionRef": { "feedUrl": "https://feeds.example.com/long-walks.xml" },
+      "guid": "lw-ep-007",
+      "enclosureUrl": "https://cdn.example.com/lw/007.mp3",
+      "title": "Walk 7: Along the Estuary",
+      "publishedAt": "2026-05-18T06:00:00Z",
+      "durationSeconds": 5100,
+      "status": "unplayed",
+      "playCount": 0,
+      "hidden": false,
+      "updatedAt": "2026-05-18T06:00:00Z"
+    }
+  ],
+
+  "queue": [
+    {
+      "position": 1,
+      "episodeRef": { "guid": "https://feeds.example.com/portable-listening/ep/42" },
+      "addedAt": "2026-05-25T09:00:00Z",
+      "source": "manual"
+    },
+    {
+      "position": 2,
+      "episodeRef": { "guid": "lw-ep-007" },
+      "addedAt": "2026-05-25T09:01:00Z",
+      "source": "auto"
+    }
+  ],
+
+  "bookmarks": [
+    {
+      "bookmarkId": "01HXYZJ8K1Q2T0V7P9D2N7R3C1",
+      "episodeRef": { "guid": "https://feeds.example.com/portable-listening/ep/42" },
+      "atSeconds": 1384.0,
+      "endSeconds": 1421.5,
+      "label": "Great quote about feed ownership",
+      "note": "Quote starts at 'and if you can't take it with you...'",
+      "createdAt": "2026-05-25T08:23:00Z",
+      "updatedAt": "2026-05-25T08:23:00Z"
+    }
+  ],
+
+  "preferences": {
+    "global": {
+      "playbackRate": 1.2,
+      "skipForwardSeconds": 30,
+      "skipBackwardSeconds": 15,
+      "trimSilence": true,
+      "boostVoice": false
+    },
+    "perFeed": {
+      "917393e3-1b1e-5cef-ace4-edaa54e1f810": {
+        "playbackRate": 1.0,
+        "skipIntroSeconds": 90,
+        "skipOutroSeconds": 60,
+        "autoDownload": "latest-3"
+      }
+    }
+  },
+
+  "extensions": {
+    "com.trimplayer.skips": [
+      {
+        "episodeGuid": "https://feeds.example.com/portable-listening/ep/42",
+        "skippedRanges": [[12.0, 47.5], [180.0, 195.0]]
+      }
+    ]
+  }
+}
