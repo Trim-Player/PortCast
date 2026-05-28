@@ -9,7 +9,7 @@ txt: $(DRAFT).txt
 html: $(DRAFT).html
 
 $(DRAFT).xml: $(DRAFT).md
-	kdrfc -3 -o xml $<
+	kramdown-rfc $< > $@
 
 $(DRAFT).txt: $(DRAFT).xml
 	xml2rfc --text $<
