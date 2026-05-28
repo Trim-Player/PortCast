@@ -10,9 +10,12 @@ as an Informational RFC via the Independent Submission stream.
 
 **Document:** PortCast: A JSON-Based Interchange Format and Sync API
 for Portable Podcast Listener Data
-**I-D:** https://datatracker.ietf.org/doc/draft-trimplayer-portcast/
-**Project:** https://portcast.org/
-**Source:** https://github.com/Trim-Player/PortCast
+**Internet-Draft:** https://datatracker.ietf.org/doc/draft-trimplayer-portcast/
+**Posted:** 2026-05-28 (24 pages)
+**Plain text:** https://www.ietf.org/archive/id/draft-trimplayer-portcast-00.txt
+**HTML:** https://datatracker.ietf.org/doc/html/draft-trimplayer-portcast
+**Project home:** https://portcast.org/
+**Source repository:** https://github.com/Trim-Player/PortCast
 **Authors:** Trimplayer Editors <trimplayerapp@gmail.com>
 **Intended stream:** Independent Submission
 **Intended status:** Informational
@@ -83,3 +86,4 @@ Sincerely,
 Trimplayer Editors
 trimplayerapp@gmail.com
 https://trimplayer.com/
+https://portcast.org/
