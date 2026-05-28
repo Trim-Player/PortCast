@@ -1,0 +1,42 @@
+name: Build Internet-Draft
+
+on:
+  push:
+    paths:
+      - 'drafts/**'
+      - '.github/workflows/draft.yml'
+  pull_request:
+    paths:
+      - 'drafts/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.2'
+          bundler-cache: true
+
+      - name: Install kramdown-rfc and xml2rfc
+        run: |
+          gem install kramdown-rfc
+          pip install xml2rfc
+
+      - name: Build draft
+        working-directory: drafts
+        run: |
+          make xml
+          make txt
+          make html
+
+      - name: Upload draft artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: internet-draft
+          path: |
+            drafts/draft-trimplayer-portcast-00.xml
+            drafts/draft-trimplayer-portcast-00.txt
+            drafts/draft-trimplayer-portcast-00.html

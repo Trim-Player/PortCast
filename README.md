@@ -80,7 +80,18 @@ PortCast aims to be:
 Version **0.1.0**, draft. We expect to iterate on the data model with
 input from other podcast app developers before locking 1.0. Open
 questions (signed manifests, delta sync, OPML auto-bridging) are listed
-in [SPECIFICATION.md §13](SPECIFICATION.md#13-open-questions-for-v02).
+in [SPECIFICATION.md §15](SPECIFICATION.md#15-open-questions-for-v03).
+
+### RFC Independent Submission
+
+PortCast is being prepared for publication as an Informational RFC via
+the [Independent Submission stream](https://www.rfc-editor.org/authors/rfc-independent-submissions/).
+The Internet-Draft source (kramdown-rfc) lives in
+[`drafts/draft-trimplayer-portcast-00.md`](drafts/draft-trimplayer-portcast-00.md);
+build and submission steps are in
+[`drafts/SUBMISSION.md`](drafts/SUBMISSION.md). The GitHub Action in
+[`.github/workflows/draft.yml`](.github/workflows/draft.yml) renders
+the `.txt` / `.html` / `.xml` on every push.
 
 ## Contributing
 
