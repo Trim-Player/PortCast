@@ -45,9 +45,11 @@ pytest
 
 ## Deploy
 
-Behind a reverse proxy (nginx / Caddy) terminating TLS for
-`import.portcast.org`, with `SPOTIFY_REDIRECT_URI` set to the public
-callback URL. The service is stateless — no DB, no persistent sessions;
-the only state in flight is a signed cookie carrying the OAuth state
-during the redirect dance and a short-lived signed cookie carrying the
-access token from callback to export.
+See [DEPLOY.md](DEPLOY.md) for the step-by-step Lightsail recipe
+(systemd unit, nginx site, certbot). The deploy artifacts themselves
+are checked in under [`deploy/`](deploy/).
+
+The service is stateless — no DB, no persistent sessions; the only
+state in flight is a signed cookie carrying the OAuth state during the
+redirect dance and a short-lived signed cookie carrying the access
+token from callback to export.

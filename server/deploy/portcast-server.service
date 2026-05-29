@@ -1,0 +1,19 @@
+[Unit]
+Description=PortCast Spotify export server (import.portcast.org)
+After=network.target
+
+[Service]
+User=portcast
+WorkingDirectory=/opt/portcast-server/server
+EnvironmentFile=/etc/portcast-server.env
+ExecStart=/opt/portcast-server/venv/bin/uvicorn --factory portcast_server.main:create_app --host 127.0.0.1 --port 8765
+Restart=always
+RestartSec=5
+KillMode=control-group
+KillSignal=SIGTERM
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
