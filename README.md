@@ -33,9 +33,11 @@ PortCast/
 ├── SPECIFICATION.md                       # The protocol itself
 ├── schema/portcast.schema.json            # JSON Schema (draft 2020-12)
 ├── examples/sample-export.portcast.json   # Realistic sample document
-└── reference/                             # Python reference impl
-    ├── portcast/                          # Models, validator, OPML bridge, CLI
-    └── tests/                             # 19 tests, all passing
+├── reference/                             # Python reference impl
+│   ├── portcast/                          # Models, validator, OPML bridge, CLI
+│   └── tests/                             # 19 tests, all passing
+└── server/                                # FastAPI export service (import.portcast.org)
+    └── portcast_server/                   # Spotify OAuth → PortCast download
 ```
 
 ## Quickstart

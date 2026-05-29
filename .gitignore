@@ -24,4 +24,5 @@ Thumbs.db
 # Local secrets / dev artifacts
 .env
 .env.*
+!.env.example
 *.local
