@@ -29,6 +29,7 @@
         <span>PortCast</span>
       </a>
       <nav>
+        <a href="#try">Try</a>
         <a href="#what">What</a>
         <a href="#why">Why</a>
         <a href="#spec">Spec</a>
@@ -56,6 +57,29 @@
         <p class="origin">
           Created by <a href="https://trimplayer.com">Trimplayer</a>.
           Free for anyone to implement.
+        </p>
+      </div>
+    </section>
+
+    <section id="try" class="band alt">
+      <div class="wrap">
+        <h2>Try it &mdash; export from Spotify</h2>
+        <p>
+          A reference exporter for Spotify lives at
+          <a href="https://import.portcast.org"><code>import.portcast.org</code></a>.
+          Sign in with Spotify and you&rsquo;ll get a <code>.portcast.json</code>
+          file of your followed shows, your saved episodes, and the resume
+          positions Spotify has on file &mdash; ready to feed into any
+          podcast app that implements the spec.
+        </p>
+        <p>
+          <a class="btn primary" href="https://import.portcast.org">Export from Spotify</a>
+        </p>
+        <p class="origin">
+          Built as a worked example of the spec. The server doesn&rsquo;t
+          store your data &mdash; the Spotify access token lives only in a
+          short-lived signed cookie and is discarded after the export.
+          <a href="https://github.com/Trim-Player/PortCast/tree/main/server">Source on GitHub</a>.
         </p>
       </div>
     </section>
