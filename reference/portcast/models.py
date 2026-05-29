@@ -10,13 +10,17 @@ from __future__ import annotations
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Iterable, Literal, Optional
+from typing import Any, Literal, Optional
 
-SPEC_VERSION = "0.1.0"
+SPEC_VERSION = "0.2.0"
 
 EpisodeStatus = Literal["unplayed", "in_progress", "completed", "archived"]
 PlaybackEventType = Literal[
     "play", "pause", "seek", "complete", "speed_change", "bookmark"
+]
+CompletenessLevel = Literal["full", "partial", "current-state-only"]
+CompletenessSection = Literal[
+    "subscriptions", "episodes", "events", "queue", "bookmarks", "preferences"
 ]
 
 
@@ -27,8 +31,6 @@ def _now_iso() -> str:
 
 
 def _new_id(prefix: str = "") -> str:
-    # ULID would be nice but uuid4 is in the stdlib and good enough for the
-    # reference impl. Producers can use whatever ID scheme they like.
     return f"{prefix}{uuid.uuid4().hex}"
 
 
@@ -60,11 +62,12 @@ class Owner:
 class SubscriptionRef:
     feedUrl: Optional[str] = None
     podcastGuid: Optional[str] = None
+    platformRefs: Optional[list[str]] = None
 
     def __post_init__(self) -> None:
-        if not self.feedUrl and not self.podcastGuid:
+        if not self.feedUrl and not self.podcastGuid and not self.platformRefs:
             raise ValueError(
-                "SubscriptionRef requires at least one of feedUrl or podcastGuid"
+                "SubscriptionRef requires at least one of feedUrl, podcastGuid, or platformRefs"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -75,11 +78,12 @@ class SubscriptionRef:
 class EpisodeRef:
     guid: Optional[str] = None
     enclosureUrl: Optional[str] = None
+    platformRefs: Optional[list[str]] = None
 
     def __post_init__(self) -> None:
-        if not self.guid and not self.enclosureUrl:
+        if not self.guid and not self.enclosureUrl and not self.platformRefs:
             raise ValueError(
-                "EpisodeRef requires at least one of guid or enclosureUrl"
+                "EpisodeRef requires at least one of guid, enclosureUrl, or platformRefs"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -92,6 +96,7 @@ class Subscription:
     subscriptionId: str = field(default_factory=lambda: _new_id())
     feedUrl: Optional[str] = None
     podcastGuid: Optional[str] = None
+    platformRefs: Optional[list[str]] = None
     author: Optional[str] = None
     imageUrl: Optional[str] = None
     subscribedAt: Optional[str] = None
@@ -103,9 +108,9 @@ class Subscription:
     extensions: Optional[dict[str, Any]] = None
 
     def __post_init__(self) -> None:
-        if not self.feedUrl and not self.podcastGuid:
+        if not self.feedUrl and not self.podcastGuid and not self.platformRefs:
             raise ValueError(
-                "Subscription requires at least one of feedUrl or podcastGuid"
+                "Subscription requires at least one of feedUrl, podcastGuid, or platformRefs"
             )
 
     def to_dict(self) -> dict[str, Any]:
@@ -120,6 +125,8 @@ class PlaybackEvent:
     fromPositionSeconds: Optional[float] = None
     speed: Optional[float] = None
     bookmarkRef: Optional[str] = None
+    source: Optional[str] = None
+    capturedAt: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         return _strip_none(asdict(self))
@@ -132,6 +139,7 @@ class EpisodeState:
     episodeStateId: str = field(default_factory=lambda: _new_id())
     guid: Optional[str] = None
     enclosureUrl: Optional[str] = None
+    platformRefs: Optional[list[str]] = None
     title: Optional[str] = None
     publishedAt: Optional[str] = None
     durationSeconds: Optional[float] = None
@@ -143,14 +151,16 @@ class EpisodeState:
     rating: Optional[float] = None
     starred: Optional[bool] = None
     hidden: Optional[bool] = None
+    source: Optional[str] = None
+    capturedAt: Optional[str] = None
     events: Optional[list[PlaybackEvent]] = None
     updatedAt: str = field(default_factory=_now_iso)
     extensions: Optional[dict[str, Any]] = None
 
     def __post_init__(self) -> None:
-        if not self.guid and not self.enclosureUrl:
+        if not self.guid and not self.enclosureUrl and not self.platformRefs:
             raise ValueError(
-                "EpisodeState requires at least one of guid or enclosureUrl"
+                "EpisodeState requires at least one of guid, enclosureUrl, or platformRefs"
             )
         if self.status == "in_progress" and self.positionSeconds is None:
             raise ValueError(
@@ -159,8 +169,6 @@ class EpisodeState:
 
     def to_dict(self) -> dict[str, Any]:
         d = _strip_none(asdict(self))
-        # asdict() flattens nested dataclasses, but we want SubscriptionRef
-        # / PlaybackEvent serialized via their _strip_none paths.
         d["subscriptionRef"] = self.subscriptionRef.to_dict()
         if self.events is not None:
             d["events"] = [e.to_dict() for e in self.events]
@@ -212,6 +220,20 @@ class Preferences:
 
 
 @dataclass
+class CompletenessAssertion:
+    section: CompletenessSection
+    source: str
+    level: CompletenessLevel
+    since: Optional[str] = None
+    until: Optional[str] = None
+    capturedAt: Optional[str] = None
+    note: Optional[str] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return _strip_none(asdict(self))
+
+
+@dataclass
 class PortCastDocument:
     generator: Generator
     subscriptions: list[Subscription] = field(default_factory=list)
@@ -222,6 +244,7 @@ class PortCastDocument:
     queue: Optional[list[QueueItem]] = None
     bookmarks: Optional[list[Bookmark]] = None
     preferences: Optional[Preferences] = None
+    completeness: Optional[list[CompletenessAssertion]] = None
     extensions: Optional[dict[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -240,6 +263,8 @@ class PortCastDocument:
             d["bookmarks"] = [b.to_dict() for b in self.bookmarks]
         if self.preferences is not None:
             d["preferences"] = self.preferences.to_dict()
+        if self.completeness is not None:
+            d["completeness"] = [c.to_dict() for c in self.completeness]
         if self.extensions is not None:
             d["extensions"] = self.extensions
         return d
@@ -278,6 +303,9 @@ class PortCastDocument:
                 global_=pref.get("global"),
                 perFeed=pref.get("perFeed"),
             )
+        completeness = None
+        if isinstance(data.get("completeness"), list):
+            completeness = [_completeness_from_dict(c) for c in data["completeness"]]
 
         return cls(
             portcast=data.get("portcast", SPEC_VERSION),
@@ -289,6 +317,7 @@ class PortCastDocument:
             queue=queue,
             bookmarks=bookmarks,
             preferences=preferences,
+            completeness=completeness,
             extensions=data.get("extensions"),
         )
 
@@ -299,6 +328,7 @@ def _subscription_from_dict(d: dict[str, Any]) -> Subscription:
         title=d["title"],
         feedUrl=d.get("feedUrl"),
         podcastGuid=d.get("podcastGuid"),
+        platformRefs=d.get("platformRefs"),
         author=d.get("author"),
         imageUrl=d.get("imageUrl"),
         subscribedAt=d.get("subscribedAt"),
@@ -314,7 +344,9 @@ def _subscription_from_dict(d: dict[str, Any]) -> Subscription:
 def _episode_from_dict(d: dict[str, Any]) -> EpisodeState:
     ref = d["subscriptionRef"]
     sub_ref = SubscriptionRef(
-        feedUrl=ref.get("feedUrl"), podcastGuid=ref.get("podcastGuid")
+        feedUrl=ref.get("feedUrl"),
+        podcastGuid=ref.get("podcastGuid"),
+        platformRefs=ref.get("platformRefs"),
     )
     events = None
     if isinstance(d.get("events"), list):
@@ -326,6 +358,8 @@ def _episode_from_dict(d: dict[str, Any]) -> EpisodeState:
                 fromPositionSeconds=ev.get("fromPositionSeconds"),
                 speed=ev.get("speed"),
                 bookmarkRef=ev.get("bookmarkRef"),
+                source=ev.get("source"),
+                capturedAt=ev.get("capturedAt"),
             )
             for ev in d["events"]
         ]
@@ -334,6 +368,7 @@ def _episode_from_dict(d: dict[str, Any]) -> EpisodeState:
         subscriptionRef=sub_ref,
         guid=d.get("guid"),
         enclosureUrl=d.get("enclosureUrl"),
+        platformRefs=d.get("platformRefs"),
         title=d.get("title"),
         publishedAt=d.get("publishedAt"),
         durationSeconds=d.get("durationSeconds"),
@@ -346,6 +381,8 @@ def _episode_from_dict(d: dict[str, Any]) -> EpisodeState:
         rating=d.get("rating"),
         starred=d.get("starred"),
         hidden=d.get("hidden"),
+        source=d.get("source"),
+        capturedAt=d.get("capturedAt"),
         events=events,
         updatedAt=d.get("updatedAt") or _now_iso(),
         extensions=d.get("extensions"),
@@ -357,7 +394,9 @@ def _queue_item_from_dict(d: dict[str, Any]) -> QueueItem:
     return QueueItem(
         position=d["position"],
         episodeRef=EpisodeRef(
-            guid=ref.get("guid"), enclosureUrl=ref.get("enclosureUrl")
+            guid=ref.get("guid"),
+            enclosureUrl=ref.get("enclosureUrl"),
+            platformRefs=ref.get("platformRefs"),
         ),
         addedAt=d.get("addedAt"),
         source=d.get("source"),
@@ -369,7 +408,9 @@ def _bookmark_from_dict(d: dict[str, Any]) -> Bookmark:
     return Bookmark(
         bookmarkId=d.get("bookmarkId") or _new_id(),
         episodeRef=EpisodeRef(
-            guid=ref.get("guid"), enclosureUrl=ref.get("enclosureUrl")
+            guid=ref.get("guid"),
+            enclosureUrl=ref.get("enclosureUrl"),
+            platformRefs=ref.get("platformRefs"),
         ),
         atSeconds=d["atSeconds"],
         endSeconds=d.get("endSeconds"),
@@ -377,4 +418,16 @@ def _bookmark_from_dict(d: dict[str, Any]) -> Bookmark:
         note=d.get("note"),
         createdAt=d.get("createdAt") or _now_iso(),
         updatedAt=d.get("updatedAt"),
+    )
+
+
+def _completeness_from_dict(d: dict[str, Any]) -> CompletenessAssertion:
+    return CompletenessAssertion(
+        section=d["section"],
+        source=d["source"],
+        level=d["level"],
+        since=d.get("since"),
+        until=d.get("until"),
+        capturedAt=d.get("capturedAt"),
+        note=d.get("note"),
     )

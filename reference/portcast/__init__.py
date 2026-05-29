@@ -6,6 +6,7 @@ See SPECIFICATION.md at the repo root for the full protocol.
 
 from .models import (
     Bookmark,
+    CompletenessAssertion,
     EpisodeRef,
     EpisodeState,
     Generator,
@@ -32,10 +33,11 @@ __all__ = [
     "QueueItem",
     "Bookmark",
     "Preferences",
+    "CompletenessAssertion",
     "validate",
     "ValidationError",
     "import_opml",
     "export_opml",
 ]
 
-SPEC_VERSION = "0.1.0"
+SPEC_VERSION = "0.2.0"

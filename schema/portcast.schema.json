@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://portcast.org/schema/0.1.0/portcast.schema.json",
+  "$id": "https://portcast.org/schema/0.2.0/portcast.schema.json",
   "title": "PortCast Document",
   "description": "Root container for an exported PortCast document.",
   "type": "object",
@@ -48,6 +48,11 @@
       "items": { "$ref": "#/$defs/Bookmark" }
     },
     "preferences": { "$ref": "#/$defs/Preferences" },
+    "completeness": {
+      "type": "array",
+      "description": "Producer's assertions about what each section of this document covers — used by consumers when merging multiple documents.",
+      "items": { "$ref": "#/$defs/CompletenessAssertion" }
+    },
     "extensions":  { "$ref": "#/$defs/Extensions" }
   },
 
@@ -60,6 +65,11 @@
     "PodcastGuid": {
       "type": "string",
       "pattern": "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    },
+    "PlatformRef": {
+      "type": "string",
+      "description": "Platform-specific identifier of last resort, formatted as '<scheme>:<type>:<id>' (e.g. 'spotify:show:5CnDmMUG0S5bSSw612fs8C'). Use only when neither podcastGuid nor feedUrl is available (e.g. Spotify-exclusive shows that have no RSS feed).",
+      "pattern": "^[a-z][a-z0-9+.-]*:[a-z][a-z0-9-]*:[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+$"
     },
     "Extensions": {
       "type": "object",
@@ -76,6 +86,12 @@
         "subscriptionId": { "type": "string", "minLength": 1 },
         "feedUrl":        { "type": "string", "format": "uri" },
         "podcastGuid":    { "$ref": "#/$defs/PodcastGuid" },
+        "platformRefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PlatformRef" },
+          "uniqueItems": true,
+          "description": "Platform-specific identifiers (e.g. 'spotify:show:...'). Identifier of last resort when the show has no RSS feed."
+        },
         "title":          { "type": "string", "minLength": 1 },
         "author":         { "type": "string" },
         "imageUrl":       { "type": "string", "format": "uri" },
@@ -96,7 +112,8 @@
       },
       "anyOf": [
         { "required": ["feedUrl"] },
-        { "required": ["podcastGuid"] }
+        { "required": ["podcastGuid"] },
+        { "required": ["platformRefs"] }
       ]
     },
 
@@ -104,12 +121,18 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "feedUrl":     { "type": "string", "format": "uri" },
-        "podcastGuid": { "$ref": "#/$defs/PodcastGuid" }
+        "feedUrl":      { "type": "string", "format": "uri" },
+        "podcastGuid":  { "$ref": "#/$defs/PodcastGuid" },
+        "platformRefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PlatformRef" },
+          "uniqueItems": true
+        }
       },
       "anyOf": [
         { "required": ["feedUrl"] },
-        { "required": ["podcastGuid"] }
+        { "required": ["podcastGuid"] },
+        { "required": ["platformRefs"] }
       ]
     },
 
@@ -118,11 +141,17 @@
       "additionalProperties": false,
       "properties": {
         "guid":          { "type": "string", "minLength": 1 },
-        "enclosureUrl":  { "type": "string", "format": "uri" }
+        "enclosureUrl":  { "type": "string", "format": "uri" },
+        "platformRefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PlatformRef" },
+          "uniqueItems": true
+        }
       },
       "anyOf": [
         { "required": ["guid"] },
-        { "required": ["enclosureUrl"] }
+        { "required": ["enclosureUrl"] },
+        { "required": ["platformRefs"] }
       ]
     },
 
@@ -135,6 +164,11 @@
         "subscriptionRef": { "$ref": "#/$defs/SubscriptionRef" },
         "guid":            { "type": "string", "minLength": 1 },
         "enclosureUrl":    { "type": "string", "format": "uri" },
+        "platformRefs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/PlatformRef" },
+          "uniqueItems": true
+        },
         "title":           { "type": "string" },
         "publishedAt":     { "$ref": "#/$defs/Timestamp" },
         "durationSeconds": { "type": "number", "minimum": 0 },
@@ -152,6 +186,9 @@
         "starred":         { "type": "boolean" },
         "hidden":          { "type": "boolean" },
 
+        "source":      { "$ref": "#/$defs/SourceId" },
+        "capturedAt":  { "$ref": "#/$defs/Timestamp" },
+
         "events": {
           "type": "array",
           "items": { "$ref": "#/$defs/PlaybackEvent" }
@@ -162,7 +199,8 @@
       },
       "anyOf": [
         { "required": ["guid"] },
-        { "required": ["enclosureUrl"] }
+        { "required": ["enclosureUrl"] },
+        { "required": ["platformRefs"] }
       ],
       "allOf": [
         {
@@ -184,7 +222,9 @@
         "positionSeconds":     { "type": "number", "minimum": 0 },
         "fromPositionSeconds": { "type": "number", "minimum": 0 },
         "speed":               { "type": "number", "exclusiveMinimum": 0 },
-        "bookmarkRef":         { "type": "string" }
+        "bookmarkRef":         { "type": "string" },
+        "source":              { "$ref": "#/$defs/SourceId" },
+        "capturedAt":          { "$ref": "#/$defs/Timestamp" }
       },
       "additionalProperties": true,
       "allOf": [
@@ -251,6 +291,42 @@
         "trimSilence":         { "type": "boolean" },
         "boostVoice":          { "type": "boolean" },
         "autoDownload":        { "type": "string" }
+      }
+    },
+
+    "SourceId": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Short identifier for the upstream source that produced this entity or event (e.g. 'spotify-web-api', 'spotify-data-export', 'lastfm', 'trimplayer', 'user-import'). Free-form; reverse-DNS strings are also valid."
+    },
+
+    "CompletenessAssertion": {
+      "type": "object",
+      "required": ["section", "source", "level"],
+      "additionalProperties": false,
+      "description": "A producer's statement that a given section of this document was assembled from a given source at a given level of completeness. Consumers use these assertions to decide what NOT to interpret as deletions when merging.",
+      "properties": {
+        "section": {
+          "type": "string",
+          "enum": [
+            "subscriptions",
+            "episodes",
+            "events",
+            "queue",
+            "bookmarks",
+            "preferences"
+          ]
+        },
+        "source": { "$ref": "#/$defs/SourceId" },
+        "level": {
+          "type": "string",
+          "enum": ["full", "partial", "current-state-only"],
+          "description": "'full' = this source's complete view of the section; 'partial' = a known-incomplete subset (use 'since'/'until' to bound it); 'current-state-only' = present-tense values only, no historical events."
+        },
+        "since":      { "$ref": "#/$defs/Timestamp" },
+        "until":      { "$ref": "#/$defs/Timestamp" },
+        "capturedAt": { "$ref": "#/$defs/Timestamp" },
+        "note":       { "type": "string" }
       }
     }
   }

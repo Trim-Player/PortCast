@@ -1,6 +1,6 @@
 {
-  "portcast": "0.1.0",
-  "generatedAt": "2026-05-26T14:00:00Z",
+  "portcast": "0.2.0",
+  "generatedAt": "2026-05-29T14:00:00Z",
   "generator": {
     "name": "Trimplayer",
     "version": "3.4.1",
@@ -26,7 +26,10 @@
         "applePodcastsId": "1500000001",
         "podcastIndexId": "920666"
       },
-      "updatedAt": "2026-05-26T14:00:00Z"
+      "platformRefs": [
+        "spotify:show:5CnDmMUG0S5bSSw612fs8C"
+      ],
+      "updatedAt": "2026-05-29T14:00:00Z"
     },
     {
       "subscriptionId": "01HXYZJ8K1Q2T0V7P9D2N7R3A2",
@@ -38,6 +41,18 @@
       "tags": ["narrative"],
       "notificationsEnabled": false,
       "updatedAt": "2026-05-20T10:00:00Z"
+    },
+    {
+      "subscriptionId": "01HXYZJ8K1Q2T0V7P9D2N7R3A3",
+      "platformRefs": [
+        "spotify:show:7makk4oTQel546B0PZlDM5"
+      ],
+      "title": "A Spotify Exclusive",
+      "author": "Some Studio",
+      "subscribedAt": "2025-11-04T08:00:00Z",
+      "tags": ["interview"],
+      "notificationsEnabled": true,
+      "updatedAt": "2026-05-29T14:00:00Z"
     }
   ],
 
@@ -57,13 +72,21 @@
       "lastPlayedAt": "2026-05-25T08:11:00Z",
       "starred": true,
       "hidden": false,
+      "source": "trimplayer",
+      "capturedAt": "2026-05-25T08:11:05Z",
       "events": [
-        { "type": "play",  "at": "2026-05-22T18:30:00Z", "positionSeconds": 0 },
-        { "type": "pause", "at": "2026-05-22T19:05:12Z", "positionSeconds": 2112 },
-        { "type": "play",  "at": "2026-05-25T08:00:00Z", "positionSeconds": 2112 },
-        { "type": "seek",  "at": "2026-05-25T08:02:00Z", "positionSeconds": 1200, "fromPositionSeconds": 2232 },
-        { "type": "speed_change", "at": "2026-05-25T08:03:00Z", "speed": 1.5 },
-        { "type": "pause", "at": "2026-05-25T08:11:00Z", "positionSeconds": 1245.2 }
+        { "type": "play",  "at": "2026-05-22T18:30:00Z", "positionSeconds": 0,
+          "source": "trimplayer", "capturedAt": "2026-05-22T18:30:01Z" },
+        { "type": "pause", "at": "2026-05-22T19:05:12Z", "positionSeconds": 2112,
+          "source": "trimplayer" },
+        { "type": "play",  "at": "2026-05-25T08:00:00Z", "positionSeconds": 2112,
+          "source": "trimplayer" },
+        { "type": "seek",  "at": "2026-05-25T08:02:00Z", "positionSeconds": 1200, "fromPositionSeconds": 2232,
+          "source": "trimplayer" },
+        { "type": "speed_change", "at": "2026-05-25T08:03:00Z", "speed": 1.5,
+          "source": "trimplayer" },
+        { "type": "pause", "at": "2026-05-25T08:11:00Z", "positionSeconds": 1245.2,
+          "source": "trimplayer" }
       ],
       "updatedAt": "2026-05-25T08:11:00Z"
     },
@@ -84,6 +107,7 @@
       "rating": 5,
       "starred": false,
       "hidden": false,
+      "source": "trimplayer",
       "updatedAt": "2026-05-15T20:14:00Z"
     },
     {
@@ -98,6 +122,22 @@
       "playCount": 0,
       "hidden": false,
       "updatedAt": "2026-05-18T06:00:00Z"
+    },
+    {
+      "episodeStateId": "01HXYZJ8K1Q2T0V7P9D2N7R3B4",
+      "subscriptionRef": { "platformRefs": ["spotify:show:7makk4oTQel546B0PZlDM5"] },
+      "platformRefs": ["spotify:episode:2QFiX9q0jKQ1JV4d7zZk0Y"],
+      "title": "Episode 12: The Interview Edition",
+      "publishedAt": "2026-05-27T10:00:00Z",
+      "durationSeconds": 2700,
+      "status": "in_progress",
+      "positionSeconds": 612,
+      "playCount": 1,
+      "firstPlayedAt": "2026-05-28T19:00:00Z",
+      "lastPlayedAt": "2026-05-28T19:10:12Z",
+      "source": "spotify-web-api",
+      "capturedAt": "2026-05-29T14:00:00Z",
+      "updatedAt": "2026-05-28T19:10:12Z"
     }
   ],
 
@@ -146,6 +186,19 @@
       }
     }
   },
+
+  "completeness": [
+    { "section": "subscriptions", "source": "trimplayer",
+      "level": "full", "capturedAt": "2026-05-29T14:00:00Z" },
+    { "section": "subscriptions", "source": "spotify-web-api",
+      "level": "full", "capturedAt": "2026-05-29T14:00:00Z",
+      "note": "Adds platform-exclusive shows that have no RSS feed." },
+    { "section": "episodes", "source": "spotify-web-api",
+      "level": "current-state-only", "capturedAt": "2026-05-29T14:00:00Z",
+      "note": "Resume points only; historical positions are not exposed by the Spotify Web API." },
+    { "section": "events", "source": "trimplayer",
+      "level": "full", "capturedAt": "2026-05-29T14:00:00Z" }
+  ],
 
   "extensions": {
     "com.trimplayer.skips": [

@@ -1,6 +1,6 @@
 # PortCast Protocol Specification
 
-**Version:** 0.1.0 (file mode, Draft) · 0.2.0 (API mode, Draft)
+**Version:** 0.2.0 (file mode + API mode, Draft)
 **Status:** Working Draft
 **Editors:** Trimplayer
 **License:** This specification is published under CC BY 4.0. Reference code is MIT.
@@ -15,8 +15,11 @@ preferences — between independent podcast applications without a central
 service. It builds on identifiers already present in RSS (`<item><guid>`,
 feed URL) and the Podcast Namespace (`<podcast:guid>`) so that
 implementations can interoperate without inventing a new identity
-namespace. This document specifies the file format (v0.1) and a federated
-sync API (v0.2) that reuses the same data model.
+namespace, and provides a platform-reference identifier of last resort
+for shows that have no RSS feed (e.g. platform-exclusive content). This
+document specifies the file format and a federated sync API that share
+a single data model, together with completeness and merge semantics that
+let a consumer combine documents produced by different upstream sources.
 
 ## Status of This Document
 
@@ -47,8 +50,8 @@ lost on every migration.
 This document specifies PortCast, a protocol whose goal is simple: a
 listener SHOULD be able to leave any podcast application and arrive at
 any other application with the relationship to their podcasts intact.
-PortCast defines a JSON document format (file mode, §3 through §12) and
-an optional HTTPS API (API mode, §13) that exposes the same entities for
+PortCast defines a JSON document format (file mode, §3 through §11) and
+an optional HTTPS API (API mode, §14) that exposes the same entities for
 incremental synchronisation. The two modes share a single data model;
 File mode is the interoperability floor that every conforming
 implementation can fall back to.
@@ -69,8 +72,8 @@ specification commit to not operating a central service.
    protocol defines. Anything outside the model goes in `extensions` so it
    round-trips through apps that don't understand it.
 4. **Partial + incremental.** Every entity carries an `updatedAt` timestamp,
-   so a future sync profile can ship deltas. The v0.1 file format is a full
-   snapshot, but the data model is sync-friendly.
+   so the same data model serves both a full file-mode snapshot and the
+   delta-sync responses of API mode (§14).
 5. **Human-readable.** A user should be able to open the file in a text
    editor and recognize what it says about them.
 6. **Versioned.** The document declares its protocol version; consumers can
@@ -107,7 +110,7 @@ following top-level shape:
 
 ```json
 {
-  "portcast": "0.1.0",
+  "portcast": "0.2.0",
   "generatedAt": "2026-05-26T14:00:00Z",
   "generator": { "name": "Trimplayer", "version": "3.4.1" },
   "owner": { "displayName": "Jonathan", "email": "user@example.com" },
@@ -116,6 +119,7 @@ following top-level shape:
   "queue":         [ ... ],
   "bookmarks":     [ ... ],
   "preferences":   { ... },
+  "completeness":  [ ... ],
   "extensions":    { ... }
 }
 ```
@@ -131,6 +135,7 @@ following top-level shape:
 | `queue`        | no       | Ordered array of `QueueItem`.                        |
 | `bookmarks`    | no       | Array of `Bookmark`.                                 |
 | `preferences`  | no       | A `Preferences` object — global + per-feed defaults. |
+| `completeness` | no       | Producer's per-section completeness assertions (§11). |
 | `extensions`   | no       | Namespaced extension data (see §10).                 |
 
 The file extension SHOULD be `.portcast.json` and the IANA media type
@@ -149,8 +154,13 @@ A `Subscription` MUST carry **at least one** of the following:
 - `podcastGuid` — the [Podcast Namespace `<podcast:guid>`][pgu] value when
   the feed publishes one. This is the strongest identifier and SHOULD be
   preferred when matching across apps.
+- `platformRefs` — one or more platform-reference URIs (§4.3) when, and
+  only when, neither of the open identifiers above is available.
 
-A subscription SHOULD include both when both are available.
+A subscription SHOULD include `feedUrl` and `podcastGuid` whenever they
+are available, and SHOULD include `platformRefs` for every platform on
+which the show is known to be addressable, regardless of whether the
+open identifiers are also present.
 
 Apps MAY also carry directory-specific IDs (Apple Podcasts ID, Podcast
 Index ID, etc.) under `Subscription.identifiers.*` — these are advisory,
@@ -164,16 +174,61 @@ An `EpisodeState` MUST carry **at least one** of:
 
 - `guid` — the RSS `<item><guid>` value (preferred).
 - `enclosureUrl` — the media URL from `<enclosure url="...">`.
+- `platformRefs` — one or more platform-reference URIs (§4.3) when, and
+  only when, neither of the open identifiers above is available.
 
-It MUST also carry a `subscriptionRef`: either `podcastGuid` or `feedUrl`,
-matching one of the document's `subscriptions[]` entries. This is how a
-consumer attaches the episode state back to its show.
+It MUST also carry a `subscriptionRef`: a `SubscriptionRef` whose
+`podcastGuid`, `feedUrl`, or `platformRefs` matches one of the
+document's `subscriptions[]` entries. This is how a consumer attaches
+the episode state back to its show.
 
 If neither a `guid` nor an `enclosureUrl` is known (e.g., a show that
 recycles GUIDs, or local recordings), an episode state MAY use a stable
 `(subscriptionRef, publishedAt, title)` tuple — but consumers are not
 required to match by it. Producers SHOULD include `enclosureUrl` whenever
 possible.
+
+### 4.3 Platform references
+
+Some shows and episodes are not addressable by an RSS feed at all —
+notably platform-exclusive content (e.g. shows that exist only inside a
+single closed application and have no public RSS endpoint or
+`<podcast:guid>`). For these, a producer MAY identify a subscription or
+episode using one or more `platformRefs`, formatted as URIs of the form:
+
+```
+<scheme>:<type>:<id>
+```
+
+- `scheme` is a short lowercase platform identifier (e.g. `spotify`,
+  `apple`, `pocketcasts`).
+- `type` is the entity type (`show`, `podcast`, `episode`).
+- `id` is the platform's opaque identifier for the entity.
+
+Examples:
+
+```
+spotify:show:5CnDmMUG0S5bSSw612fs8C
+spotify:episode:7makk4oTQel546B0PZlDM5
+apple:podcast:1500000001
+```
+
+Platform references are an **identifier of last resort**: producers MUST
+prefer `podcastGuid` or `feedUrl` (resp. `guid` or `enclosureUrl`) when
+either is known, and SHOULD include them alongside `platformRefs` rather
+than instead of them. A consumer that does not implement a given
+platform's resolver:
+
+- MUST NOT silently drop subscriptions or episode states that carry only
+  `platformRefs`. It SHOULD surface them to the listener as
+  "unmigratable from <platform>" so the listener understands what was
+  lost.
+- MAY offer the listener a manual match (e.g., a search box) to bind
+  the unresolved entity to a feed it does know about.
+
+This document does not establish an IANA registry of platform schemes;
+schemes in active use by adapters in the PortCast reference
+implementation are listed informatively in Appendix B.
 
 ## 5. Subscriptions
 
@@ -263,6 +318,26 @@ Apps that don't track event-level history can omit `events` entirely; the
 top-level fields (`positionSeconds`, `playCount`, `lastPlayedAt`) are still
 enough for everyday "where did I leave off" portability.
 
+### 6.3 Source and capture time
+
+An `EpisodeState` and each `PlaybackEvent` MAY carry:
+
+- `source` — a short identifier for the upstream system the entity or
+  event was captured from (e.g. `spotify-web-api`,
+  `spotify-data-export`, `lastfm`, `trimplayer`, `user-import`). The
+  value is free-form; reverse-DNS strings are also valid.
+- `capturedAt` — the RFC 3339 timestamp when the producer's system
+  observed or ingested the entity. Distinct from `at` (which is when
+  the listener actually performed the action) and from `updatedAt`
+  (which is when the producer last mutated its own record).
+
+These fields exist so a consumer that merges PortCast documents
+produced from different sources (§11) can attribute provenance and
+detect duplicates. Producers SHOULD set `source` on every entity and
+event when more than one upstream source is in play. Consumers MUST
+NOT use `source` to silently discard data; it is metadata, not access
+control.
+
 ## 7. Queue
 
 ```json
@@ -340,9 +415,124 @@ Anything outside this spec lives under an `extensions` object, keyed by
 Consumers MUST preserve `extensions` on round-trip even if they don't
 understand a namespace. This is what keeps a multi-app journey lossless.
 
-## 11. Security and privacy considerations
+## 11. Completeness and merging
 
-### 11.1 Sensitivity of the data
+A real migration is rarely served by a single source. A listener
+moving off a closed platform may have:
+
+- a fast, current-state-only export from the platform's API
+  (subscriptions, "where I left off" positions, the most recent
+  handful of plays);
+- a slow, full historical export delivered later out-of-band (months
+  or years of play history);
+- additional partial data from a third party (e.g. a scrobbling
+  service that has been mirroring plays for the same listener).
+
+PortCast does not require a producer to assemble all of this before
+emitting a document. Instead, producers MAY emit several documents
+over time and a consumer is expected to merge them. This section
+defines the metadata producers attach and the rules consumers follow
+so that staged migration is well-defined.
+
+### 11.1 The `completeness` field
+
+A document MAY include a top-level `completeness` array. Each entry is
+a producer's assertion about one section of the document:
+
+```json
+"completeness": [
+  { "section": "subscriptions", "source": "spotify-web-api",
+    "level": "full", "capturedAt": "2026-05-29T14:00:00Z" },
+  { "section": "episodes",      "source": "spotify-web-api",
+    "level": "current-state-only", "capturedAt": "2026-05-29T14:00:00Z",
+    "note": "Resume points only; historical positions not exposed by the Web API." },
+  { "section": "events",        "source": "spotify-web-api",
+    "level": "partial", "since": "2026-05-29T13:30:00Z",
+    "note": "Spotify Web API exposes only the most recent 50 plays via /me/player/recently-played." }
+]
+```
+
+`level` is one of:
+
+| Value                  | Meaning                                                                                                                                         |
+| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `full`                 | This source's complete view of the section, as of `capturedAt`. A consumer MAY treat absences as deletions when applying a `full` assertion.    |
+| `partial`              | A known-incomplete subset. `since`/`until` bound the range covered. A consumer MUST NOT treat absences outside the range as deletions.          |
+| `current-state-only`   | Present-tense values are captured (e.g. `positionSeconds`, `status`) but no historical `events`. A consumer MUST NOT delete existing events.    |
+
+Omitting `completeness` is permitted. A document without a
+`completeness` array SHOULD be treated by consumers as if every present
+section were `full` from a single anonymous source. This preserves
+backwards compatibility with v0.1 documents.
+
+### 11.2 Merging two documents
+
+When a consumer holds an existing PortCast dataset and receives a new
+PortCast document for the same listener, it merges them entity by
+entity using the rules below.
+
+**Matching keys.** Entities are matched on identifier in this priority
+order:
+
+| Entity         | Match by, in order                                                       |
+| -------------- | ------------------------------------------------------------------------ |
+| `Subscription` | `podcastGuid` → `feedUrl` → any value in `platformRefs`                  |
+| `EpisodeState` | (`subscriptionRef`, `guid`) → (`subscriptionRef`, `enclosureUrl`) → (`subscriptionRef`, any value in `platformRefs`) |
+| `Bookmark`     | `bookmarkId`                                                              |
+| `QueueItem`    | not merged element-wise (see below)                                       |
+
+If a candidate match exists by `platformRefs` only, the consumer SHOULD
+also confirm that the platform scheme matches (e.g. an
+existing entity carrying `spotify:show:X` MUST NOT be merged with a new
+one carrying `apple:podcast:Y`).
+
+**Per-entity field resolution.** For scalar fields on a matched entity
+(e.g. `positionSeconds`, `status`, `rating`, `notificationsEnabled`):
+
+- The value from the entity with the larger `updatedAt` wins.
+- On a tie, the value from the entity with the larger `capturedAt`
+  wins (if present on both).
+- On a further tie, the incoming document wins.
+
+Producers SHOULD NOT set `updatedAt` to a value newer than they
+themselves observed. This rule depends on producers being honest about
+when they actually wrote a field.
+
+**Event collections.** The `events` array on an `EpisodeState` is
+unioned, not replaced. Two events are considered duplicates and
+deduplicated if they share `(type, at, source)`. If `source` is
+missing on one side, fall back to `(type, at, positionSeconds)`. A
+consumer MUST NOT discard events whose `source` differs from any
+event already present.
+
+**Bookmarks.** Bookmarks are upserted by `bookmarkId`. Consumers SHOULD
+preserve bookmarks they already hold whose `bookmarkId` does not
+appear in the incoming document.
+
+**Queue.** The queue is intentionally not merged. A document carrying
+a `queue` field replaces the consumer's queue in full only when the
+matching `completeness` assertion is `full`. If the incoming document
+has no queue, or its queue completeness is `partial` or absent, the
+consumer SHOULD preserve its existing queue.
+
+**Deletions.** A consumer MAY treat entities present in an existing
+dataset and absent from an incoming document as deletions only when a
+matching `completeness` assertion at level `full` covers the section
+that holds them, and the assertion's `capturedAt` is newer than the
+existing entity's `updatedAt`. In all other cases, absent ≠ deleted.
+
+### 11.3 Identifying multi-source state
+
+Producers that assemble a document from more than one upstream source
+SHOULD set `source` on each `EpisodeState` and `PlaybackEvent` (§6.3)
+so that downstream consumers can attribute provenance and apply
+source-aware policies (e.g. preferring real-time-API captures over
+delayed exports). The `source` value is free-form and MAY repeat the
+same identifier used in a `completeness` entry.
+
+## 12. Security and privacy considerations
+
+### 12.1 Sensitivity of the data
 
 A PortCast document is a detailed record of personal listening behaviour:
 which shows a listener follows, when they started or finished an episode,
@@ -351,7 +541,7 @@ included) the moment-to-moment shape of their attention. Implementers
 MUST treat PortCast documents and API responses as personal data of
 comparable sensitivity to browser history or messaging metadata.
 
-### 11.2 Producer requirements
+### 12.2 Producer requirements
 
 Producers:
 
@@ -366,35 +556,35 @@ Producers:
 - SHOULD warn the listener before transmitting a PortCast document to a
   third party.
 
-### 11.3 Consumer requirements
+### 12.3 Consumer requirements
 
 Consumers SHOULD treat an imported document as personal data, not as
 shareable telemetry. Consumers MUST NOT retransmit a received document
 to third parties without explicit listener consent. Consumers SHOULD
 make it possible for the listener to delete imported data on demand.
 
-### 11.4 Transport and storage (API mode)
+### 12.4 Transport and storage (API mode)
 
-In API mode (§13):
+In API mode (§14):
 
 - Servers MUST require TLS (HTTPS); plain HTTP MUST be refused.
 - Credentials (bearer tokens, OAuth client secrets) MUST NOT appear in
   URL query strings or path components; they MUST be carried in HTTP
   request headers.
 - Servers MUST scope OAuth tokens to a single listener account.
-- Servers SHOULD support per-client token revocation (§13.13).
+- Servers SHOULD support per-client token revocation (§14.13).
 - The `portcast.history` scope SHOULD be requested separately from
   `portcast.read` so the listener can grant subscription synchronisation
   without exposing per-event playback data.
 
-### 11.5 Threat model and out-of-scope risks
+### 12.5 Threat model and out-of-scope risks
 
-PortCast does not, in v0.1, define a signing or sealing mechanism: a
+PortCast does not, in v0.2, define a signing or sealing mechanism: a
 document cannot be cryptographically attributed to the producer that
 wrote it. Consumers SHOULD treat the source of a document as
 out-of-band-authenticated (e.g., the user manually selected the file or
 authorised the OAuth client). Adding a signed manifest is listed as an
-open question for v0.3 (§15).
+open question for v0.3 (§16).
 
 PortCast does not protect against a malicious application that has been
 granted access to a listener's data; access control is the
@@ -403,7 +593,7 @@ protocol. Consumers SHOULD apply input validation to imported
 documents (notably to URL fields and `extensions` content) consistent
 with their language and platform's safe-handling guidance.
 
-## 12. Versioning
+## 13. Versioning
 
 `portcast` is a SemVer string. Consumers:
 
@@ -412,19 +602,19 @@ with their language and platform's safe-handling guidance.
 - MUST NOT silently drop fields they don't recognize; preserve them under
   `extensions._unknown` if necessary.
 
-## 13. Live sync API (v0.2 — Draft)
+## 14. Live sync API
 
-The v0.1 spec defines a *file format*: a single JSON document moved between
-apps out-of-band. v0.2 introduces an optional *API mode*: the same entities,
-exposed over HTTPS so clients can synchronise incrementally without a full
-re-export. The wire payloads in API mode reuse the v0.1 schemas — no new
-entity shapes are introduced.
+The file format (§3–§10) is a single JSON document moved between apps
+out-of-band. API mode is an optional addition: the same entities,
+exposed over HTTPS so clients can synchronise incrementally without a
+full re-export. The wire payloads in API mode reuse the file-mode
+schemas — no new entity shapes are introduced.
 
-A conforming v0.2 implementation MAY implement file mode, API mode, or
+A conforming implementation MAY implement file mode, API mode, or
 both. Clients MUST assume nothing beyond what a server advertises in its
-discovery document (§13.2).
+discovery document (§14.2).
 
-### 13.1 Operating modes
+### 14.1 Operating modes
 
 | Mode      | Transport                              | Use case                                            |
 | --------- | -------------------------------------- | --------------------------------------------------- |
@@ -436,7 +626,7 @@ at least `GET /portcast/v1/export`, which returns the same document a file
 export would produce. A client that does not speak the rest of the API can
 still pull a full snapshot this way.
 
-### 13.2 Discovery
+### 14.2 Discovery
 
 A PortCast server SHOULD publish a discovery document at
 `/.well-known/portcast`:
@@ -468,7 +658,7 @@ entries. A server that does not track per-event history omits `events`.
 A server that does not implement delta sync omits `deltas` and clients
 fall back to fetching full collections.
 
-### 13.3 Versioning and content type
+### 14.3 Versioning and content type
 
 - Endpoints live under `/portcast/v1/...`. The `v1` is the API major
   version and is independent of the spec version declared inside payloads.
@@ -477,7 +667,7 @@ fall back to fetching full collections.
 - Backwards-compatible additions (new optional fields, new capability
   strings) MUST NOT bump the API major version.
 
-### 13.4 Authentication
+### 14.4 Authentication
 
 Implementations MUST use one of:
 
@@ -490,11 +680,11 @@ Implementations MUST use one of:
 Credentials MUST NOT appear in URL query strings. Servers MUST reject
 requests over plain HTTP.
 
-### 13.5 Endpoints
+### 14.5 Endpoints
 
 | Method | Path                                     | Body / Returns                                                                 |
 | ------ | ---------------------------------------- | ------------------------------------------------------------------------------ |
-| GET    | `/portcast/v1/export`                    | Full PortCast document (= v0.1 file)                                           |
+| GET    | `/portcast/v1/export`                    | Full PortCast document (= file-mode export)                                    |
 | POST   | `/portcast/v1/import`                    | Body: full or partial PortCast document; server upserts each entity            |
 | GET    | `/portcast/v1/subscriptions`             | `{ subscriptions, deletions?, syncedAt, nextCursor? }`                         |
 | GET    | `/portcast/v1/subscriptions/{ref}`       | A `Subscription`                                                               |
@@ -519,7 +709,7 @@ URLs, raw text, and other characters that do not round-trip cleanly
 through URL encoding. Episode operations use the collection endpoint with
 the ref carried in the body.
 
-### 13.6 Delta sync
+### 14.6 Delta sync
 
 Collection endpoints (`subscriptions`, `episodes`, `bookmarks`) MUST accept
 `?since=<RFC 3339 timestamp>` when the server advertises the `deltas`
@@ -543,21 +733,21 @@ Servers SHOULD retain deletion tombstones for at least 30 days. Clients
 that have been offline longer SHOULD discard their cached `syncedAt` and
 perform a full pull.
 
-### 13.7 Pagination
+### 14.7 Pagination
 
 Endpoints that may return large collections support cursor-based
 pagination. The response carries `nextCursor` when more pages exist; the
 client passes `?cursor=<value>` to fetch the next page. Cursors are
 opaque strings. `since` and `cursor` MAY be combined.
 
-### 13.8 Conditional updates
+### 14.8 Conditional updates
 
 Writes SHOULD use `If-Match: <updatedAt>` for optimistic concurrency.
 Servers MUST respond `412 Precondition Failed` if the resource's current
 `updatedAt` is newer than the value supplied. This prevents two clients
 clobbering each other's position updates on the same episode.
 
-### 13.9 Errors
+### 14.9 Errors
 
 Errors are JSON, with HTTP status reflecting the class:
 
@@ -577,7 +767,7 @@ Defined `code` values: `unauthorized`, `forbidden`, `not_found`,
 define additional codes under a reverse-DNS prefix
 (`com.example.quota_exceeded`).
 
-### 13.10 Webhooks (optional)
+### 14.10 Webhooks (optional)
 
 Servers advertising the `webhooks` capability accept registrations at:
 
@@ -600,14 +790,14 @@ for at least 24 hours.
 Webhooks are an optimisation; the baseline pattern is client-driven
 polling with `?since=`.
 
-### 13.11 Capability fallback
+### 14.11 Capability fallback
 
 A client that needs a capability the server does not advertise SHOULD
 fall back to `GET /portcast/v1/export` and process the returned document
 as a file-mode import. This guarantees a baseline interop floor even for
 minimal server implementations.
 
-### 13.12 Federation
+### 14.12 Federation
 
 PortCast is intentionally federated. Each app exposes its own endpoint on
 its own domain; there is no central directory or hub. A client connecting
@@ -622,20 +812,20 @@ Servers MUST NOT require registration with any central authority to be
 considered conforming, and the editors of this spec commit to not
 operating one.
 
-### 13.13 Security and privacy in API mode
+### 14.13 Security and privacy in API mode
 
-Section 11 applies to API mode unchanged. In particular, §11.4 specifies
+Section 12 applies to API mode unchanged. In particular, §12.4 specifies
 the transport and credential requirements for API-mode servers.
 Implementers SHOULD support per-client token revocation so a listener
 can disconnect a single client without affecting the others.
 
-## 14. IANA considerations
+## 15. IANA considerations
 
 This document requests four IANA actions. All registrations use the
 provisional-registration procedure where applicable; the editors will
 work with IANA to finalise registrations at the time of RFC publication.
 
-### 14.1 Media type registration
+### 15.1 Media type registration
 
 IANA is requested to register the following media type per [RFC6838]:
 
@@ -646,8 +836,8 @@ IANA is requested to register the following media type per [RFC6838]:
 | Required parameters      | none                                                |
 | Optional parameters      | none                                                |
 | Encoding considerations  | binary; PortCast documents are UTF-8 encoded JSON  |
-| Security considerations  | See Section 11 of this document.                   |
-| Interoperability cons.   | See Section 12 (Versioning).                       |
+| Security considerations  | See Section 12 of this document.                   |
+| Interoperability cons.   | See Section 13 (Versioning).                       |
 | Published specification  | This document.                                     |
 | Applications that use it | Podcast applications, subscription importers/exporters, OPML migration tools, listener-data synchronisation services. |
 | Fragment identifier      | The JSON Pointer fragment identifier syntax [RFC6901] applies. |
@@ -660,7 +850,7 @@ The file extension `.portcast.json` is the RECOMMENDED extension; the
 `+json` structured-syntax suffix [RFC8259] indicates the underlying JSON
 serialization.
 
-### 14.2 Well-known URI registration
+### 15.2 Well-known URI registration
 
 IANA is requested to register a new entry in the "Well-Known URIs"
 registry per [RFC8615]:
@@ -669,11 +859,11 @@ registry per [RFC8615]:
 | ---------------------- | -------------------------------------------------- |
 | URI suffix             | `portcast`                                         |
 | Change controller      | The editors of this specification.                  |
-| Specification document | This document (Section 13.2).                       |
+| Specification document | This document (Section 14.2).                       |
 | Related information    | The resource is a JSON object describing a PortCast API endpoint (its base URL, authentication scheme, and capability set). |
 | Status                 | provisional                                        |
 
-### 14.3 OAuth 2.0 scope registration
+### 15.3 OAuth 2.0 scope registration
 
 IANA is requested to register the following OAuth 2.0 scopes in the
 "OAuth Access Token Scopes" registry per [RFC6749] and [RFC8809]:
@@ -686,14 +876,14 @@ IANA is requested to register the following OAuth 2.0 scopes in the
 
 Change controller: the editors of this specification.
 
-### 14.4 PortCast error code registry
+### 15.4 PortCast error code registry
 
 This document establishes a new IANA registry titled "PortCast Error
 Codes" with the following structure:
 
 | Field             | Type / notes                                       |
 | ----------------- | -------------------------------------------------- |
-| `code`            | A short, lowercase, underscore-separated identifier returned in API error responses (§13.9). |
+| `code`            | A short, lowercase, underscore-separated identifier returned in API error responses (§14.9). |
 | `description`     | A one-sentence summary of when the error is returned. |
 | `reference`       | The document defining the code.                    |
 
@@ -706,7 +896,7 @@ contents:
 | `forbidden`                | The credentials do not grant access to the resource.| This document      |
 | `not_found`                | The referenced entity does not exist.               | This document      |
 | `conflict`                 | The request conflicts with current server state.   | This document      |
-| `precondition_failed`      | An `If-Match` precondition was not satisfied (§13.8). | This document    |
+| `precondition_failed`      | An `If-Match` precondition was not satisfied (§14.8). | This document    |
 | `invalid_request`          | The request body or parameters are malformed.       | This document      |
 | `unsupported_capability`   | The client asked for a capability the server does not advertise. | This document |
 | `rate_limited`             | The client has exceeded a server-defined rate limit.| This document      |
@@ -716,7 +906,7 @@ Servers MAY return additional vendor-defined codes prefixed with a
 reverse-DNS namespace (e.g., `com.example.quota_exceeded`); such
 vendor-prefixed codes do not require IANA registration.
 
-## 15. Open questions for v0.3
+## 16. Open questions for v0.3
 
 - A signed manifest (detached signature) so listeners can verify a
   document or API response came from app X.
@@ -729,13 +919,16 @@ vendor-prefixed codes do not require IANA registration.
 - WebFinger [RFC7033]-style discovery so a client can find a PortCast
   server given only the listener's email address.
 - Conflict-resolution semantics when two clients diverge while offline,
-  beyond the optimistic-concurrency floor in §13.8.
+  beyond the optimistic-concurrency floor in §14.8.
+- IANA registry of platform-reference schemes (§4.3), so adapters
+  written by different parties can agree on `spotify:`, `apple:`,
+  `pocketcasts:`, etc. without coordinating out-of-band.
 
 Feedback welcome via GitHub issues on this repository.
 
-## 16. References
+## 17. References
 
-### 16.1 Normative references
+### 17.1 Normative references
 
 **[RFC2119]** Bradner, S., "Key words for use in RFCs to Indicate
 Requirement Levels", BCP 14, RFC 2119, March 1997,
@@ -787,7 +980,7 @@ August 2020, <https://www.rfc-editor.org/info/rfc8809>.
 Dennis, "JSON Schema: A Media Type for Describing JSON Documents",
 Draft 2020-12, <https://json-schema.org/draft/2020-12/schema>.
 
-### 16.2 Informative references
+### 17.2 Informative references
 
 **[OPML2.0]** Winer, D., "OPML 2.0 Specification", October 2007,
 <http://opml.org/spec2.opml>.
@@ -808,7 +1001,7 @@ December 2009, <https://www.rfc-editor.org/info/rfc5744>.
 "WebFinger", RFC 7033, September 2013,
 <https://www.rfc-editor.org/info/rfc7033>.
 
-## 17. Acknowledgments
+## 18. Acknowledgments
 
 PortCast builds on a long tradition of attempts to make a listener's
 relationship with their podcasts portable. The editors thank Dave Winer
@@ -819,7 +1012,7 @@ rest of a listener's data. We thank the Podcast Namespace project for
 We also thank the podcast-app development community on GitHub and the
 fediverse for feedback on early drafts.
 
-## 18. Authors' addresses
+## 19. Authors' addresses
 
 **Editor: Trimplayer**
 Email: <trimplayerapp@gmail.com>
@@ -838,3 +1031,42 @@ companion Internet-Draft is produced from this source using
 RFC Editor's standard "Status of This Memo" and "Copyright Notice"
 boilerplate as required by [RFC4846] and [RFC5378]; that boilerplate is
 inserted by the publication toolchain rather than maintained here.
+
+## Appendix B. Known platform-reference schemes (non-normative)
+
+The following platform-reference schemes (§4.3) are in use by adapters
+shipped with the PortCast reference implementation. This list is
+informative and not an IANA registry; new schemes MAY be introduced by
+adapter authors without coordination with the editors of this spec.
+
+| Scheme        | Entity types                       | Example URI                                            |
+| ------------- | ---------------------------------- | ------------------------------------------------------ |
+| `spotify`     | `show`, `episode`                  | `spotify:show:5CnDmMUG0S5bSSw612fs8C`                  |
+
+A future revision of this document MAY promote this list to a normative
+IANA registry (see §16).
+
+## Appendix C. Changelog (non-normative)
+
+### 0.2.0 — 2026-05-29
+
+- Added `platformRefs` (§4.3) as an identifier of last resort on
+  `Subscription`, `SubscriptionRef`, `EpisodeRef`, and `EpisodeState`,
+  for shows and episodes with no RSS feed (e.g. Spotify-exclusive
+  content).
+- Added optional `source` and `capturedAt` (§6.3) on `EpisodeState`
+  and `PlaybackEvent` to attribute provenance.
+- Added the `completeness` document field and a new §11 specifying
+  merge semantics for documents assembled from multiple upstream
+  sources over time.
+- Unified version numbering: the file format and the API mode now
+  share a single SemVer (0.2.0).
+- Added Appendix B (known platform-reference schemes) and
+  Appendix C (this changelog).
+
+### 0.1.0 — 2026-05-26
+
+- Initial public draft of the file format: subscriptions, episode
+  state, playback events, queue, bookmarks, preferences, namespaced
+  extensions, security and privacy considerations, IANA
+  considerations.
