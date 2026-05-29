@@ -231,7 +231,9 @@ _LANDING_HTML = """<!doctype html>
     not store your Spotify data &mdash; we read it once and return it
     to you. See the
     <a href="https://portcast.org">PortCast spec</a> for what&rsquo;s
-    in the file.
+    in the file, and the
+    <a href="https://portcast.org/privacy.html">privacy policy</a> for
+    exactly what we touch.
   </p>
 </body>
 </html>

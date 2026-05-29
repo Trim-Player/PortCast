@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Privacy &mdash; PortCast</title>
+  <meta name="description" content="Privacy policy for the PortCast spec site (portcast.org) and the PortCast Spotify export service (import.portcast.org)." />
+  <link rel="canonical" href="https://portcast.org/privacy.html" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="style.css" />
+  <!-- Google tag (gtag.js) -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-F72L90KQPR"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-F72L90KQPR');
+  </script>
+</head>
+<body>
+  <header class="site">
+    <div class="wrap">
+      <a class="brand" href="/">
+        <img src="favicon.svg" alt="" width="28" height="28" />
+        <span>PortCast</span>
+      </a>
+      <nav>
+        <a href="/#try">Try</a>
+        <a href="/#what">What</a>
+        <a href="/#why">Why</a>
+        <a href="/#spec">Spec</a>
+        <a href="/#implement">Implement</a>
+        <a href="https://github.com/Trim-Player/PortCast" rel="noopener">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main>
+    <section class="band">
+      <div class="wrap">
+        <p class="eyebrow">Last updated 2026-05-30</p>
+        <h1>Privacy policy</h1>
+        <p class="lede">
+          This policy covers two distinct services operated by Trimplayer:
+          the PortCast spec site at <strong>portcast.org</strong> and the
+          PortCast Spotify export service at <strong>import.portcast.org</strong>.
+          They handle data very differently, so each is described on its own.
+        </p>
+
+        <h2>1. portcast.org &mdash; the spec site</h2>
+        <p>
+          <code>portcast.org</code> is a static documentation site describing
+          the PortCast protocol. It does not require an account, does not
+          accept user input, and does not collect personal information.
+        </p>
+        <p>
+          The site loads <strong>Google Analytics 4</strong>
+          (measurement ID <code>G-F72L90KQPR</code>) for aggregate traffic
+          statistics. Google may set cookies and process IP-address-based
+          location data under
+          <a href="https://policies.google.com/privacy">Google&rsquo;s
+          privacy policy</a>. You can opt out by blocking analytics in
+          your browser or installing the
+          <a href="https://tools.google.com/dlpage/gaoptout">Google Analytics
+          opt-out add-on</a>.
+        </p>
+        <p>
+          No other third-party scripts run on <code>portcast.org</code>.
+        </p>
+
+        <h2>2. import.portcast.org &mdash; the Spotify export service</h2>
+        <p>
+          <code>import.portcast.org</code> is a stateless service that takes
+          a listener&rsquo;s Spotify library and returns it as a
+          <code>.portcast.json</code> download. It exists as a reference
+          implementation of the PortCast protocol &mdash; you can read its
+          source on
+          <a href="https://github.com/Trim-Player/PortCast/tree/main/server">GitHub</a>.
+        </p>
+
+        <h3>What data we access</h3>
+        <p>
+          When you click <em>Connect Spotify</em>, you are redirected to
+          Spotify&rsquo;s authorization screen. If you approve, we request
+          the following scopes only:
+        </p>
+        <ul>
+          <li><code>user-library-read</code> &mdash; your followed shows and
+            saved episodes.</li>
+          <li><code>user-read-playback-position</code> &mdash; the resume
+            position Spotify records for your saved episodes.</li>
+          <li><code>user-read-email</code>, <code>user-read-private</code>
+            &mdash; your Spotify display name and email, written to the
+            <code>owner</code> field of the export so the file is
+            self-identifying when you re-import it elsewhere.</li>
+        </ul>
+
+        <h3>What we do with the data</h3>
+        <p>
+          We use the access token Spotify issues to call the Spotify Web API
+          and fetch the data above <strong>once</strong>. We assemble it
+          into a PortCast document and return it to you as a file download.
+        </p>
+        <p>
+          We do <strong>not</strong> store the data on disk, in a database,
+          or in any backup. There is no user account, no server-side
+          history, and nothing to delete &mdash; once the response is sent,
+          the data exists only in your downloaded file. The PortCast export
+          service has no database.
+        </p>
+
+        <h3>Cookies</h3>
+        <p>
+          To complete the OAuth round-trip we set two short-lived cookies on
+          <code>import.portcast.org</code>, both
+          <code>HttpOnly</code>, <code>Secure</code>, and
+          <code>SameSite=Lax</code>:
+        </p>
+        <ul>
+          <li><code>pc_state</code> &mdash; a signed anti-CSRF state value
+            valid for 10 minutes, used to verify the redirect coming back
+            from Spotify.</li>
+          <li><code>pc_tok</code> &mdash; a signed cookie carrying your
+            Spotify access token from the OAuth callback to the export
+            step, valid for 5 minutes and cleared the moment the export
+            response is generated.</li>
+        </ul>
+        <p>
+          Both cookies are cryptographically signed with a server-side
+          secret. We use no analytics cookies or third-party trackers on
+          <code>import.portcast.org</code>.
+        </p>
+
+        <h3>Third parties</h3>
+        <p>
+          The only third party involved is <strong>Spotify</strong>
+          (the source of the data you are exporting). Your use of the
+          Spotify authorization flow is governed by
+          <a href="https://www.spotify.com/legal/privacy-policy/">Spotify&rsquo;s
+          privacy policy</a> and
+          <a href="https://www.spotify.com/legal/end-user-agreement/">terms
+          of use</a>. We do not share your Spotify data with any party
+          other than you.
+        </p>
+
+        <h3>Revoking access</h3>
+        <p>
+          You can revoke our app&rsquo;s access to your Spotify account at
+          any time from
+          <a href="https://www.spotify.com/account/apps/">your Spotify
+          account&rsquo;s connected-apps page</a>. Because we hold no
+          long-lived token, revocation takes effect immediately the next
+          time you would otherwise return to the service.
+        </p>
+
+        <h2>3. Hosting and jurisdiction</h2>
+        <p>
+          Both services are operated by Trimplayer. The static site at
+          <code>portcast.org</code> is served by GitHub Pages. The
+          export service at <code>import.portcast.org</code> runs on
+          infrastructure hosted by Amazon Web Services in the United States.
+        </p>
+
+        <h2>4. Changes to this policy</h2>
+        <p>
+          We will update this page if the data flows above change. Material
+          changes will be reflected in the &ldquo;Last updated&rdquo; date
+          at the top of this page.
+        </p>
+
+        <h2>5. Contact</h2>
+        <p>
+          Questions or concerns about privacy can be sent to
+          <a href="mailto:trimplayerapp@gmail.com">trimplayerapp@gmail.com</a>.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="wrap">
+      <p>
+        PortCast &mdash; an open protocol by
+        <a href="https://trimplayer.com">Trimplayer</a>.
+        <a href="https://github.com/Trim-Player/PortCast">Source on GitHub</a>.
+      </p>
+      <p class="fine">
+        Spec licensed <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>.
+        Reference code licensed MIT. <a href="/privacy">Privacy</a>.
+      </p>
+    </div>
+  </footer>
+</body>
+</html>
