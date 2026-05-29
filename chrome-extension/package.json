@@ -1,0 +1,11 @@
+{
+  "name": "portcast-export-extension",
+  "version": "0.1.0",
+  "description": "Chrome extension that exports a Spotify listener's library as a PortCast file. Pure-ES-module library shared with the Trimplayer mobile WebView.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "license": "MIT"
+}

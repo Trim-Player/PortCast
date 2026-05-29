@@ -6,6 +6,7 @@
   <title>Privacy &mdash; PortCast</title>
   <meta name="description" content="Privacy policy for the PortCast spec site (portcast.org) and the PortCast Spotify export service (import.portcast.org)." />
   <link rel="canonical" href="https://portcast.org/privacy.html" />
+  <meta name="description" content="Privacy policy for the PortCast spec site (portcast.org), the PortCast Spotify export service (import.portcast.org), and the PortCast Export Chrome extension." />
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="style.css" />
   <!-- Google tag (gtag.js) -->
@@ -38,13 +39,15 @@
   <main>
     <section class="band">
       <div class="wrap">
-        <p class="eyebrow">Last updated 2026-05-30</p>
+        <p class="eyebrow">Last updated 2026-05-30 (added §3 covering the PortCast Export browser extension)</p>
         <h1>Privacy policy</h1>
         <p class="lede">
-          This policy covers two distinct services operated by Trimplayer:
-          the PortCast spec site at <strong>portcast.org</strong> and the
-          PortCast Spotify export service at <strong>import.portcast.org</strong>.
-          They handle data very differently, so each is described on its own.
+          This policy covers three distinct surfaces operated by
+          Trimplayer: the PortCast spec site at
+          <strong>portcast.org</strong>, the PortCast Spotify export
+          service at <strong>import.portcast.org</strong>, and the
+          <strong>PortCast Export</strong> browser extension. They
+          handle data very differently, so each is described on its own.
         </p>
 
         <h2>1. portcast.org &mdash; the spec site</h2>
@@ -153,7 +156,78 @@
           time you would otherwise return to the service.
         </p>
 
-        <h2>3. Hosting and jurisdiction</h2>
+        <h2>3. PortCast Export &mdash; the browser extension</h2>
+        <p>
+          <strong>PortCast Export</strong> is a Chrome / Edge browser
+          extension that performs the same job as
+          <code>import.portcast.org</code> but entirely on the user&rsquo;s
+          own machine, without any of the listener&rsquo;s data ever
+          reaching us. Source code lives on
+          <a href="https://github.com/Trim-Player/PortCast/tree/main/chrome-extension">GitHub</a>.
+        </p>
+
+        <h3>How it works</h3>
+        <p>
+          When you click the extension&rsquo;s toolbar icon and choose
+          &ldquo;Export from Spotify,&rdquo; the extension uses your
+          existing <code>open.spotify.com</code> session &mdash; the
+          same one Spotify&rsquo;s own web player uses &mdash; to call
+          a small number of read-only Spotify Web API endpoints. The
+          response is held in your browser&rsquo;s memory just long
+          enough to assemble a PortCast document, and saved to disk
+          via the standard browser Save-As dialog. No request is sent
+          to Trimplayer or to <code>import.portcast.org</code>.
+        </p>
+
+        <h3>What data the extension reads</h3>
+        <p>The extension only requests the following Chrome permissions:</p>
+        <ul>
+          <li><code>downloads</code> &mdash; to write the
+            <code>.portcast.json</code> file via the browser&rsquo;s
+            Save-As dialog.</li>
+          <li><strong>Host access</strong> to
+            <code>open.spotify.com</code> and
+            <code>api.spotify.com</code> only &mdash; so the
+            extension can call those domains using your existing
+            Spotify cookies. The extension never reads any other
+            site.</li>
+        </ul>
+        <p>
+          It does <strong>not</strong> request access to your tabs,
+          your reading history, your cookies on other sites, or
+          <code>&lt;all_urls&gt;</code>. It cannot see anything you do
+          outside <code>open.spotify.com</code> /
+          <code>api.spotify.com</code>.
+        </p>
+
+        <h3>Storage, sharing, telemetry</h3>
+        <ul>
+          <li><strong>Storage:</strong> the extension stores nothing
+            on disk between sessions. There is no
+            <code>storage</code> permission and no IndexedDB use.
+            Your exported file lives wherever you chose to save it.</li>
+          <li><strong>Sharing:</strong> the extension never contacts
+            any server other than Spotify. There is no telemetry, no
+            analytics, no remote logging, and no auto-update channel
+            beyond the standard Chrome Web Store mechanism.</li>
+          <li><strong>Third parties:</strong> the only third party in
+            the loop is Spotify, whose
+            <a href="https://www.spotify.com/legal/privacy-policy/">privacy
+            policy</a> governs the underlying account.</li>
+        </ul>
+
+        <h3>Revoking access</h3>
+        <p>
+          Because the extension only acts when you click its icon and
+          only uses your existing Spotify session, &ldquo;revocation&rdquo;
+          is two distinct actions: removing the extension (Chrome &rarr;
+          <code>chrome://extensions</code> &rarr; Remove) stops it from
+          ever running again, and signing out of Spotify on
+          <code>open.spotify.com</code> invalidates the session it would
+          have used.
+        </p>
+
+        <h2>4. Hosting and jurisdiction</h2>
         <p>
           Both services are operated by Trimplayer. The static site at
           <code>portcast.org</code> is served by GitHub Pages. The
@@ -161,14 +235,14 @@
           infrastructure hosted by Amazon Web Services in the United States.
         </p>
 
-        <h2>4. Changes to this policy</h2>
+        <h2>5. Changes to this policy</h2>
         <p>
           We will update this page if the data flows above change. Material
           changes will be reflected in the &ldquo;Last updated&rdquo; date
           at the top of this page.
         </p>
 
-        <h2>5. Contact</h2>
+        <h2>6. Contact</h2>
         <p>
           Questions or concerns about privacy can be sent to
           <a href="mailto:trimplayerapp@gmail.com">trimplayerapp@gmail.com</a>.

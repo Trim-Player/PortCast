@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "PortCast Export",
+  "short_name": "PortCast",
+  "version": "0.1.0",
+  "description": "Export your podcast library (followed shows, saved episodes, resume positions) to a portable PortCast file. Spotify supported; more sources to follow.",
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "PortCast Export"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["downloads"],
+  "host_permissions": [
+    "https://open.spotify.com/*",
+    "https://api.spotify.com/*"
+  ]
+}
