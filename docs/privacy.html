@@ -39,7 +39,7 @@
   <main>
     <section class="band">
       <div class="wrap">
-        <p class="eyebrow">Last updated 2026-05-30 (added §3 covering the PortCast Export browser extension)</p>
+        <p class="eyebrow">Last updated 2026-05-30 (added §3 covering the PortCast Export browser extension; narrowed extension host permissions to open.spotify.com only)</p>
         <h1>Privacy policy</h1>
         <p class="lede">
           This policy covers three distinct surfaces operated by
@@ -198,19 +198,17 @@
             creation are scoped to <code>open.spotify.com</code> by
             the host-permission list.</li>
           <li><strong>Host access</strong> to
-            <code>open.spotify.com</code> and
-            <code>api.spotify.com</code> only &mdash; so the
-            extension can call those domains using your existing
-            Spotify cookies. The extension never reads any other
-            site.</li>
+            <code>open.spotify.com</code> only &mdash; so the
+            extension can read your library from the Spotify web
+            player tab you are signed in to. The extension never
+            reads any other site.</li>
         </ul>
         <p>
           The <code>scripting</code> permission is
           <strong>fenced by the host-permission list</strong>: the
           extension can only inject scripts into tabs whose origin
-          is <code>open.spotify.com</code> or
-          <code>api.spotify.com</code>. It cannot read or modify any
-          other tab. It does <strong>not</strong> request
+          is <code>open.spotify.com</code>. It cannot read or modify
+          any other tab. It does <strong>not</strong> request
           <code>&lt;all_urls&gt;</code>, <code>activeTab</code>, or
           the broader <code>tabs</code> permission that would
           expose URLs of other tabs.
