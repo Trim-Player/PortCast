@@ -21,5 +21,13 @@
   "host_permissions": [
     "https://open.spotify.com/*",
     "https://api.spotify.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://open.spotify.com/*"],
+      "js": ["lib/spotify-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
   ]
 }

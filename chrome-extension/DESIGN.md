@@ -60,6 +60,7 @@ chrome-extension/
 ├── background.js                # MV3 service worker — orchestrator
 ├── lib/
 │   ├── portcast.js              # spec types + buildDocument from any source
+│   ├── spotify-hook.js          # MAIN-world content script: token + body capture
 │   ├── platforms.js             # registry + per-platform detection
 │   ├── platforms/
 │   │   ├── spotify.js           # Spotify client + token fetch + spec mapping
@@ -97,10 +98,18 @@ Manifest V3, ES-module service worker:
   "icons": { "16": "icons/16.png", "48": "icons/48.png", "128": "icons/128.png" },
   "action": { "default_popup": "popup.html", "default_title": "PortCast Export" },
   "background": { "service_worker": "background.js", "type": "module" },
-  "permissions": ["downloads"],
+  "permissions": ["downloads", "scripting"],
   "host_permissions": [
     "https://open.spotify.com/*",
     "https://api.spotify.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://open.spotify.com/*"],
+      "js": ["lib/spotify-hook.js"],
+      "run_at": "document_start",
+      "world": "MAIN"
+    }
   ]
 }
 ```
@@ -144,29 +153,43 @@ Explicitly **not** requested:
 ## How the export runs
 
 1. User clicks the toolbar icon → popup opens.
-2. Popup sends `{type: "export"}` to the background service worker.
-3. Service worker fetches
-   `https://open.spotify.com/get_access_token?reason=transport&productType=web-player`
-   with `credentials: "include"`. The browser attaches the user's
-   `sp_dc` / `sp_key` cookies because of host_permissions.
-4. Response is `{ accessToken, accessTokenExpirationTimestampMs, isAnonymous }`.
-   - If `isAnonymous: true` → reply to popup with `not-signed-in`
-     and the popup shows "Open Spotify and sign in" with a button
-     that opens `https://open.spotify.com` in a new tab.
-   - Otherwise continue.
-5. Service worker uses `SpotifyClient(accessToken)` to call:
-   - `GET /v1/me` (once)
-   - `GET /v1/me/shows` (paginated, follow `next` until exhausted)
-   - `GET /v1/me/episodes` (paginated)
-6. Service worker passes those three payloads to
-   `buildDocument({...})` in `lib/portcast.js` and gets back a
-   plain object matching the PortCast schema.
-7. Service worker stringifies the document, wraps it in a Blob,
-   builds an object URL, and calls
+2. Popup connects a `chrome.runtime.Port` to the background service
+   worker and posts `{ type: "start", platform: "spotify" }`.
+3. Service worker calls `findOrCreateSpotifyTab()`:
+   - If any tab already exists at `open.spotify.com/*`, use it
+     as-is (the hook is in place there and bootstrap fired during
+     its load).
+   - Otherwise create a background tab at `open.spotify.com/`.
+     The home page reliably fires authenticated `/v1/me` + GraphQL
+     calls during bootstrap that the document_start hook catches.
+4. Throughout step 3, the always-installed MAIN-world content
+   script (`lib/spotify-hook.js`) has been writing the Bearer
+   token, Client-Token, and `/v1/me/*` response bodies into
+   `sessionStorage`.
+5. Service worker runs `fetchSpotifyLibraryInTab` via
+   `chrome.scripting.executeScript({ world: "ISOLATED" })` inside
+   the tab. The fetcher:
+   - Reads the captured token (or falls through the fallback chain
+     in the "Token acquisition" section).
+   - Reads the captured `/me` body if present, otherwise calls
+     `GET /v1/me`.
+   - For `/me/shows` and `/me/episodes`: seeds pagination from the
+     captured first page if present (skipping the call), then
+     follows `next` links for any remaining pages, using the
+     captured token and a Retry-After-respecting helper for 429s.
+   - Clears all `portcast_*` keys from `sessionStorage` on the way
+     out.
+   - Returns `{ me, savedShows, savedEpisodes, tokenSource }` (or
+     `{ notSignedIn: true }`, or `{ error: "…" }`).
+6. Service worker passes those payloads to `buildDocument({...})`
+   in `lib/portcast.js` and gets a plain object matching the
+   PortCast schema.
+7. Service worker encodes the JSON as a `data:` URL and calls
    `chrome.downloads.download({ url, filename, saveAs: true })`.
    `saveAs: true` makes the dialog explicit so the user controls
    where the file lands.
-8. Popup updates: "Done — 142 subscriptions, 88 episodes."
+8. If we created the tab in step 3, close it. Popup updates:
+   "Done — 142 subscriptions, 88 episodes."
 
 The whole flow lives in the service worker. The popup is a thin
 shell that posts a message and renders progress updates.
@@ -213,62 +236,86 @@ blocked unless additional headers (`App-Platform: WebPlayer`,
 bot-like).
 
 So the more robust path is to skip the endpoint entirely whenever
-we can. Token acquisition tries three sources in order:
+we can. The v0.2 design installs the token-capturing hook as a
+**MAIN-world content script** running at `document_start` on every
+`open.spotify.com` page (registered in `manifest.json` via
+`content_scripts`, not injected dynamically). That guarantees the
+hook is in place before any page JavaScript runs, so it catches the
+authenticated bootstrap fetches the web player fires on first paint.
+The dynamic `chrome.scripting.executeScript` injection used in v0.1
+missed those calls because it installed the hook only after
+`status === "complete"`, by which time a stable page might not make
+another API call for tens of seconds.
 
-1. **`extractTokenFromPageHtml()`** — scan `script#session`,
+The hook (`lib/spotify-hook.js`) wraps `window.fetch` and
+`XMLHttpRequest`, and on any request to `*.spotify.com` it copies:
+
+- the `Authorization: Bearer …` header into
+  `sessionStorage['portcast_captured_token']`
+- the `Client-Token` header (required on some endpoints since 2024)
+  into `sessionStorage['portcast_captured_client_token']`
+- the **response body** for `/v1/me`, `/v1/me/shows`,
+  `/v1/me/episodes` into
+  `sessionStorage['portcast_captured_bodies']` (capped at ~4MB)
+
+The response-body cache lets the exporter skip the first page-fetch
+of pagination entirely when the page has already loaded the user's
+library on its own — which it has, because we open the tab at the
+library URL (see below). Skipping `/me/shows?limit=50&offset=0` is
+load-bearing: that's the call most likely to trip the rate limit
+during repeat exports.
+
+The privacy story: tokens and bodies sit in `sessionStorage` scoped
+to `open.spotify.com`, where Spotify's own JS already has them. The
+ISOLATED-world fetcher reads them when the user clicks Export and
+clears them with `sessionStorage.removeItem` once the export
+finishes (or errors out).
+
+Token acquisition order inside the ISOLATED-world fetcher:
+
+1. **`readCapturedToken()`** — token left in sessionStorage by the
+   content-script hook from a bootstrap fetch. The happy path; ~zero
+   network when opened at the library URL (below).
+2. **`extractTokenFromPageHtml()`** — scan `script#session`,
    `script#__NEXT_DATA__`, and any other `script[type="application/json"]`
-   for a known nesting path to `accessToken`. Zero network calls,
-   no Varnish surface. Works when Spotify SSR-embeds the session
-   (older builds).
-2. **`fetchTokenFromEndpoint()`** — `/get_access_token` with the
-   web-player headers above. Works when the page HTML doesn't
-   carry the session but the CDN allows the call. Gives us the
-   `isAnonymous` signal to distinguish "not signed in" from
-   "blocked."
-3. **`captureFromHook()`** — wait for the Spotify web player's
-   own JS to fire a request to any `*.spotify.com` URL, and read
-   the `Authorization: Bearer …` and `Client-Token` headers it
-   used. The actual capture happens in a tiny `installFetchHookInMainWorld`
-   function injected into the page via
-   `chrome.scripting.executeScript({ world: "MAIN" })` — MAIN
-   world is the page's own JS realm, which bypasses Spotify's
-   page-level CSP for our injection and gives us access to the
-   real `window.fetch`. The hook is dormant unless armed via
-   a `sessionStorage` flag the ISOLATED-world fetcher sets just
-   before polling, so we don't continuously harvest tokens
-   between exports. After the fetcher finishes, the flag and
-   any captured tokens are cleared from `sessionStorage` in the
-   `finally` block.
-
-The MAIN-world hook also intercepts `XMLHttpRequest` for
-robustness against future Spotify bundle changes; today the web
-player uses `fetch` for everything we care about.
-
-The hook captures both the `Authorization` bearer and the
-`Client-Token` header Spotify recently started requiring on some
-endpoints. The exporter then sends both on its own `api.spotify.com`
-requests so the requests are indistinguishable from the web
-player's own.
+   for a known nesting path to `accessToken`. Zero network. Works
+   on older builds that SSR-embed the session.
+3. **`fetchTokenFromEndpoint()`** — `/get_access_token` with
+   `App-Platform: WebPlayer` and `Accept-Language: en`. The Varnish
+   path we want to avoid; only run if (1) and (2) failed.
+4. **`waitForFreshHookCapture(10s)`** — last resort: poll for a
+   *new* hook capture (timestamp ≥ now) in case the page just
+   hasn't fired a call yet.
 
 The reliable workaround — the one Spotify's CDN can't distinguish
-from the web player itself — is to run the fetch **inside an
+from the web player itself — is to do the API calls **inside an
 `open.spotify.com` tab**. That's what `background.js` does:
 
-1. `chrome.tabs.query({ url: "https://open.spotify.com/*" })` —
-   look for an existing tab.
-2. If none, `chrome.tabs.create({ url, active: false })` opens one
-   in the background, and `chrome.tabs.onUpdated` is awaited for
-   `status === "complete"`.
-3. `chrome.scripting.executeScript({ target: { tabId }, world:
-   "ISOLATED", func: fetchSpotifyLibraryInTab })` runs a
-   self-contained fetcher inside that tab. From inside it the
-   token-acquisition fallback chain runs (page HTML extraction
-   first, then the endpoint with web-player headers — see "Token
-   acquisition" below).
-4. The injected function returns the raw `/me`, `/me/shows`, and
-   `/me/episodes` payloads. The service worker builds the document
-   from them via `lib/portcast.js` and triggers the download.
-5. If we created the tab, we close it on the way out.
+1. `chrome.tabs.query({ url: "https://open.spotify.com/*" })` — look
+   for any existing open.spotify.com tab. Any of them has the
+   always-installed hook in place and has fired authenticated
+   bootstrap calls.
+2. If none, `chrome.tabs.create({ url: SPOTIFY_TAB_URL, active: false })`
+   opens a background tab at `open.spotify.com/` (the home page).
+   The home page reliably fires authenticated `/v1/me` + GraphQL
+   calls during bootstrap (Made-For-You, recently-played, sidebar),
+   which the document_start hook catches. We previously tried
+   `/collection/podcasts/shows` to force a library fetch, but the
+   current Spotify SPA renders that route as a "page not found"
+   without an auth bootstrap.
+3. `chrome.scripting.executeScript({ target: { tabId }, world: "ISOLATED",
+   func: fetchSpotifyLibraryInTab })` runs a self-contained fetcher
+   inside that tab. It runs the token-acquisition fallback chain
+   above, then uses captured `/me/shows` / `/me/episodes` response
+   bodies as the first page of pagination (skipping the call entirely
+   when they're present), continues via `next` links for the rest,
+   and returns the raw `/me`, `/me/shows`, and `/me/episodes`
+   payloads.
+4. The service worker builds the document from those payloads via
+   `lib/portcast.js` and triggers the download.
+5. If we created the tab, we close it on the way out. We never
+   repurpose a non-library tab — the user may be listening to
+   something there.
 
 `api.spotify.com` calls happen from the same injected context, which
 also keeps the request shape identical to the web player and avoids

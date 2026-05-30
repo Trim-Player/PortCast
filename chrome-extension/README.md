@@ -59,9 +59,10 @@ chrome-extension/
 ├── background.js         # MV3 service worker — orchestrator
 ├── lib/
 │   ├── portcast.js       # spec types + buildDocument
+│   ├── spotify-hook.js   # MAIN-world content script: token + body capture
 │   ├── platforms.js      # registry
 │   └── platforms/
-│       └── spotify.js    # token fetch + library fetch + mapping
+│       └── spotify.js    # token fetch + library fetch + mapping (mobile WebView)
 ├── icons/                # 16/48/128 PNGs
 ├── tests/                # node --test
 ├── DESIGN.md             # full design doc
