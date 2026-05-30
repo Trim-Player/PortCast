@@ -17,7 +17,7 @@
     "service_worker": "background.js",
     "type": "module"
   },
-  "permissions": ["downloads"],
+  "permissions": ["downloads", "scripting"],
   "host_permissions": [
     "https://open.spotify.com/*",
     "https://api.spotify.com/*"

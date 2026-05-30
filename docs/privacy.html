@@ -180,11 +180,23 @@
         </p>
 
         <h3>What data the extension reads</h3>
-        <p>The extension only requests the following Chrome permissions:</p>
+        <p>The extension requests the following Chrome permissions:</p>
         <ul>
           <li><code>downloads</code> &mdash; to write the
             <code>.portcast.json</code> file via the browser&rsquo;s
             Save-As dialog.</li>
+          <li><code>scripting</code> &mdash; used to run the
+            Spotify fetch inside a real <code>open.spotify.com</code>
+            tab. This is required because Spotify&rsquo;s servers
+            reject the same fetch issued from the extension&rsquo;s
+            own background context. If you don&rsquo;t have
+            <code>open.spotify.com</code> open when you click
+            Export, the extension briefly opens it in a background
+            tab and closes it again when the export finishes. The
+            extension does <strong>not</strong> request the broader
+            <code>tabs</code> permission &mdash; tab queries and tab
+            creation are scoped to <code>open.spotify.com</code> by
+            the host-permission list.</li>
           <li><strong>Host access</strong> to
             <code>open.spotify.com</code> and
             <code>api.spotify.com</code> only &mdash; so the
@@ -193,11 +205,15 @@
             site.</li>
         </ul>
         <p>
-          It does <strong>not</strong> request access to your tabs,
-          your reading history, your cookies on other sites, or
-          <code>&lt;all_urls&gt;</code>. It cannot see anything you do
-          outside <code>open.spotify.com</code> /
-          <code>api.spotify.com</code>.
+          The <code>scripting</code> permission is
+          <strong>fenced by the host-permission list</strong>: the
+          extension can only inject scripts into tabs whose origin
+          is <code>open.spotify.com</code> or
+          <code>api.spotify.com</code>. It cannot read or modify any
+          other tab. It does <strong>not</strong> request
+          <code>&lt;all_urls&gt;</code>, <code>activeTab</code>, or
+          the broader <code>tabs</code> permission that would
+          expose URLs of other tabs.
         </p>
 
         <h3>Storage, sharing, telemetry</h3>

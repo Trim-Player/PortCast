@@ -122,10 +122,18 @@ Chrome Web Store review):
 - `host_permissions: api.spotify.com` — so subsequent `/v1/me/*`
   fetches actually reach Spotify's API host. (The token from
   open.spotify.com is used as a Bearer header on api.spotify.com.)
+- `scripting` — required by `chrome.scripting.executeScript`, the
+  API used to inject the fetcher into the open.spotify.com tab.
+  See "Why the fetch can't run in the service worker" below.
 
 Explicitly **not** requested:
 
-- `tabs`, `activeTab` — we never read or modify the user's tabs.
+- `tabs` — would expose URLs/titles of *every* tab. We don't need
+  it: `chrome.tabs.query({ url: "https://open.spotify.com/*" })`
+  and `chrome.tabs.create({ url })` both work without `tabs`
+  because the URL matches our host_permissions, which is enough.
+- `activeTab` — we never need ad-hoc access to "whatever the user
+  is looking at right now."
 - `cookies` — we never read cookies directly; the browser attaches
   them for us via host_permissions.
 - `storage` — we have nothing worth persisting in v1. If we later
@@ -186,6 +194,50 @@ If Spotify renames this endpoint (which they've done once historically,
 session-token path. We deliberately do **not** scrape the page for a
 token as a fallback in v1; we'd rather break loudly and ship a fix
 than silently scrape something we don't fully understand.
+
+## Why the fetch can't run in the service worker
+
+Spotify's Varnish CDN refuses any request to `/get_access_token`
+whose `Origin` request header isn't `https://open.spotify.com`,
+returning the HTML page `<title>403 URL Blocked</title>` with
+internal error `54113`. Browser fetches from a Manifest V3 service
+worker automatically carry `Origin: chrome-extension://<id>`, and
+JavaScript cannot override the `Origin` header (it's on the fetch
+spec's forbidden-header list).
+
+The reliable workaround — the one Spotify's CDN can't distinguish
+from the web player itself — is to run the fetch **inside an
+`open.spotify.com` tab**. That's what `background.js` does:
+
+1. `chrome.tabs.query({ url: "https://open.spotify.com/*" })` —
+   look for an existing tab.
+2. If none, `chrome.tabs.create({ url, active: false })` opens one
+   in the background, and `chrome.tabs.onUpdated` is awaited for
+   `status === "complete"`.
+3. `chrome.scripting.executeScript({ target: { tabId }, world:
+   "ISOLATED", func: fetchSpotifyLibraryInTab })` runs a
+   self-contained fetcher inside that tab. Its `Origin` is now
+   `https://open.spotify.com`, Spotify is happy, and the session
+   cookies attach automatically.
+4. The injected function returns the raw `/me`, `/me/shows`, and
+   `/me/episodes` payloads. The service worker builds the document
+   from them via `lib/portcast.js` and triggers the download.
+5. If we created the tab, we close it on the way out.
+
+`api.spotify.com` calls happen from the same injected context, which
+also keeps the request shape identical to the web player and avoids
+similar CDN surprises there.
+
+This is why the manifest needs `scripting` and `tabs` permissions in
+addition to `downloads` — those two are non-negotiable for the tab
+injection. They do not let the extension see or modify any non-
+`open.spotify.com` content; the host-permission list still gates
+which origins we can ever touch.
+
+`lib/platforms/spotify.js` is kept as the **mobile-WebView** version
+of this logic. In Trimplayer's mobile app the WebView itself is
+already loaded at `open.spotify.com`, so the simple in-context fetch
+works there without the tab-injection dance.
 
 ## `lib/portcast.js` — the exporter
 

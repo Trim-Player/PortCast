@@ -21,6 +21,8 @@ function show(name) {
 
 function describeProgress(p) {
   if (!p || !p.phase) return "Working…";
+  if (p.phase === "tab") return "Opening Spotify…";
+  if (p.phase === "token") return "Authorizing with Spotify…";
   if (p.phase === "me") return "Reading your Spotify profile…";
   if (p.phase === "shows") {
     return p.done
