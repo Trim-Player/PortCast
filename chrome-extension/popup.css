@@ -16,7 +16,14 @@ html, body {
     sans-serif;
   background: var(--bg);
   color: var(--fg);
-  width: 320px;
+  width: 360px;
+}
+
+#error-detail {
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
 }
 
 header {

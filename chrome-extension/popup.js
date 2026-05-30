@@ -23,6 +23,8 @@ function describeProgress(p) {
   if (!p || !p.phase) return "Working…";
   if (p.phase === "tab") return "Opening Spotify…";
   if (p.phase === "token") return "Authorizing with Spotify…";
+  if (p.phase === "token-waiting")
+    return "Waiting for Spotify to make an API call…";
   if (p.phase === "me") return "Reading your Spotify profile…";
   if (p.phase === "shows") {
     return p.done

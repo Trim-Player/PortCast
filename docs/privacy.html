@@ -221,7 +221,14 @@
           <li><strong>Storage:</strong> the extension stores nothing
             on disk between sessions. There is no
             <code>storage</code> permission and no IndexedDB use.
-            Your exported file lives wherever you chose to save it.</li>
+            During a single export run it may temporarily write a
+            captured Spotify access token to the open.spotify.com
+            tab&rsquo;s <code>sessionStorage</code> (in order to
+            move the token from the Spotify-page JS world to the
+            extension&rsquo;s code); those entries are explicitly
+            cleared from <code>sessionStorage</code> when the
+            export completes, succeeds, or fails. Your exported
+            file lives wherever you chose to save it.</li>
           <li><strong>Sharing:</strong> the extension never contacts
             any server other than Spotify. There is no telemetry, no
             analytics, no remote logging, and no auto-update channel

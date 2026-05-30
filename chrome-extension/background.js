@@ -67,6 +67,22 @@ async function runSpotifyExport(port) {
   port.postMessage({ type: "progress", progress: { phase: "tab" } });
   const { tabId, createdByUs } = await findOrCreateSpotifyTab();
 
+  // Install the MAIN-world fetch hook BEFORE running the ISOLATED
+  // fetcher. The hook is idempotent (a window flag short-circuits
+  // re-install) so this is safe on every run. We deliberately
+  // ignore install failures — extensions running into a page
+  // navigation race may transiently fail to inject, and the
+  // fetcher will fall through to clearer error messages.
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: installFetchHookInMainWorld,
+    });
+  } catch (err) {
+    console.warn("PortCast: fetch-hook install failed:", err);
+  }
+
   let payload;
   try {
     const results = await chrome.scripting.executeScript({
@@ -173,6 +189,107 @@ function waitForTabComplete(tabId, timeoutMs = 30000) {
   });
 }
 
+// ----- MAIN-world fetch hook -----
+//
+// Runs in the page's own JS world via chrome.scripting.executeScript
+// with world: "MAIN". Wraps window.fetch and XMLHttpRequest so that
+// every request the Spotify web player makes to *.spotify.com has
+// its Authorization and Client-Token headers copied to sessionStorage.
+//
+// The hook is dormant until the ISOLATED-world fetcher "arms" it by
+// writing a flag to sessionStorage. That avoids us hoarding the
+// user's access tokens between exports.
+//
+// MAIN world bypasses Spotify's page CSP for the execution itself,
+// which is why we use it here instead of injecting a <script> tag.
+function installFetchHookInMainWorld() {
+  if (window.__portcastHookInstalled) return;
+  window.__portcastHookInstalled = true;
+
+  const ARMED_KEY = "portcast_capture_armed";
+  const TOKEN_KEY = "portcast_captured_token";
+  const CLIENT_KEY = "portcast_captured_client_token";
+  const AT_KEY = "portcast_captured_at";
+
+  function armed() {
+    try {
+      return sessionStorage.getItem(ARMED_KEY) === "1";
+    } catch {
+      return false;
+    }
+  }
+
+  function capture(auth, clientToken) {
+    if (!armed()) return;
+    try {
+      if (auth && typeof auth === "string" && auth.startsWith("Bearer ")) {
+        sessionStorage.setItem(TOKEN_KEY, auth.slice(7));
+        sessionStorage.setItem(AT_KEY, String(Date.now()));
+      }
+      if (clientToken && typeof clientToken === "string") {
+        sessionStorage.setItem(CLIENT_KEY, clientToken);
+      }
+    } catch {}
+  }
+
+  function isSpotifyUrl(url) {
+    return typeof url === "string" && /\bspotify\.com\b/.test(url);
+  }
+
+  // Wrap fetch.
+  const origFetch = window.fetch;
+  window.fetch = function (input, init) {
+    try {
+      const url =
+        typeof input === "string" ? input : input && input.url ? input.url : "";
+      if (isSpotifyUrl(url)) {
+        let h = null;
+        if (init && init.headers) {
+          h =
+            init.headers instanceof Headers
+              ? init.headers
+              : new Headers(init.headers);
+        } else if (
+          input &&
+          input.headers &&
+          typeof input.headers.get === "function"
+        ) {
+          h = input.headers;
+        }
+        if (h) capture(h.get("Authorization"), h.get("Client-Token"));
+      }
+    } catch {}
+    return origFetch.apply(this, arguments);
+  };
+
+  // Wrap XMLHttpRequest. Spotify currently uses fetch for everything
+  // we care about, but their bundle has changed before and may again.
+  const XHR = window.XMLHttpRequest;
+  const origOpen = XHR.prototype.open;
+  const origSetHeader = XHR.prototype.setRequestHeader;
+  XHR.prototype.open = function (method, url) {
+    this.__portcastUrl = url;
+    return origOpen.apply(this, arguments);
+  };
+  XHR.prototype.setRequestHeader = function (name, value) {
+    try {
+      if (isSpotifyUrl(this.__portcastUrl) && typeof name === "string") {
+        const lower = name.toLowerCase();
+        if (
+          lower === "authorization" &&
+          typeof value === "string" &&
+          value.startsWith("Bearer ")
+        ) {
+          capture(value, null);
+        } else if (lower === "client-token" && typeof value === "string") {
+          capture(null, value);
+        }
+      }
+    } catch {}
+    return origSetHeader.apply(this, arguments);
+  };
+}
+
 // ----- the function that runs inside open.spotify.com -----
 //
 // chrome.scripting.executeScript serializes this function and runs
@@ -266,23 +383,86 @@ async function fetchSpotifyLibraryInTab() {
     return { error: "Token endpoint returned no accessToken." };
   }
 
+  async function captureFromHook(timeoutMs) {
+    // Arm the MAIN-world hook (it's installed and dormant until now).
+    try {
+      sessionStorage.setItem("portcast_capture_armed", "1");
+      sessionStorage.removeItem("portcast_captured_token");
+      sessionStorage.removeItem("portcast_captured_client_token");
+      sessionStorage.removeItem("portcast_captured_at");
+    } catch {}
+
+    const start = Date.now();
+    try {
+      while (Date.now() - start < timeoutMs) {
+        const token = sessionStorage.getItem("portcast_captured_token");
+        const at = parseInt(
+          sessionStorage.getItem("portcast_captured_at") || "0",
+          10,
+        );
+        const clientToken = sessionStorage.getItem(
+          "portcast_captured_client_token",
+        );
+        if (token && at >= start) {
+          return { token, clientToken: clientToken || null };
+        }
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return null;
+    } finally {
+      try {
+        sessionStorage.removeItem("portcast_capture_armed");
+        sessionStorage.removeItem("portcast_captured_token");
+        sessionStorage.removeItem("portcast_captured_client_token");
+        sessionStorage.removeItem("portcast_captured_at");
+      } catch {}
+    }
+  }
+
   async function obtainToken() {
     progress("token");
+
+    // (a) Try the page HTML — instant, zero network.
     const fromHtml = extractTokenFromPageHtml();
     if (fromHtml) return { token: fromHtml, source: "page-html" };
 
+    // (b) Try /get_access_token with web-player headers. Gives us
+    // the isAnonymous signal if Spotify cooperates; otherwise 403.
     const fromEndpoint = await fetchTokenFromEndpoint().catch((e) => ({
       error: String((e && e.message) || e),
     }));
     if (fromEndpoint.notSignedIn) return fromEndpoint;
-    if (fromEndpoint.token) return { token: fromEndpoint.token, source: "endpoint" };
+    if (fromEndpoint.token) {
+      return { token: fromEndpoint.token, source: "endpoint" };
+    }
+
+    // (c) Wait for the page's own JS to fire a *.spotify.com request
+    // and capture the Authorization (+ Client-Token) headers from it.
+    // The MAIN-world hook does the actual capture; we just poll
+    // sessionStorage. Default 10s — long enough for the player to
+    // poll its own state, short enough that a busted page doesn't
+    // hang the UI.
+    progress("token-waiting");
+    const captured = await captureFromHook(10000);
+    if (captured && captured.token) {
+      return {
+        token: captured.token,
+        clientToken: captured.clientToken,
+        source: "fetch-hook",
+      };
+    }
 
     return {
       error:
-        "Could not obtain a Spotify access token. The page HTML didn't " +
-        "carry a session block, and Spotify's /get_access_token endpoint " +
-        "responded: " + (fromEndpoint.error || "no token") + ". " +
-        "Try reloading open.spotify.com and clicking Export again.",
+        "Could not obtain a Spotify access token. Tried: " +
+        "page-HTML extraction (no session block found); " +
+        "/get_access_token endpoint (" +
+        (fromEndpoint.error || "no token") +
+        "); waiting for Spotify's own JS to make an API call (nothing " +
+        "in 10 seconds). Reload open.spotify.com, make sure you're " +
+        "signed in, and click Export again. If it keeps failing, try " +
+        "navigating to Your Library in Spotify just before clicking " +
+        "Export — that forces the player to make API calls we can hook.",
     };
   }
 
@@ -296,6 +476,12 @@ async function fetchSpotifyLibraryInTab() {
       "App-Platform": "WebPlayer",
       "Accept-Language": "en",
     };
+    // Client-Token is required by some api.spotify.com endpoints as
+    // of mid-2024; we attach it when the hook caught one. Bearer
+    // alone works for /me/* in most cases, so this is belt+braces.
+    if (tk.clientToken) {
+      headers["Client-Token"] = tk.clientToken;
+    }
 
     progress("me");
     const meResp = await fetch("https://api.spotify.com/v1/me", { headers });
@@ -359,13 +545,22 @@ function jsonToDataUrl(obj) {
 function humanizeError(err) {
   if (!err) return "Unknown error.";
   const msg = String(err.message || err);
-  if (/URL Blocked|Error 54113|403/i.test(msg)) {
+  // Diagnostics we've already authored carry specific debugging info
+  // — pass them through verbatim instead of replacing with a canned
+  // line that hides which fallback failed.
+  if (msg.indexOf("Could not obtain a Spotify access token") !== -1) {
+    return msg;
+  }
+  // Bare Varnish block page surfaces from a raw API error, never
+  // from our own diagnostic — match the actual HTML signature
+  // rather than the bare "403" substring.
+  if (/URL Blocked|Error\s+54113/i.test(msg)) {
     return (
       "Spotify's CDN blocked the request. Open https://open.spotify.com " +
       "in a tab, confirm you're signed in, and click Export again."
     );
   }
-  if (/timed out/i.test(msg)) {
+  if (/timed out waiting for Spotify to load/i.test(msg)) {
     return (
       "Spotify took too long to load. Try opening open.spotify.com " +
       "manually first, then click Export."

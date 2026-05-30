@@ -213,20 +213,42 @@ blocked unless additional headers (`App-Platform: WebPlayer`,
 bot-like).
 
 So the more robust path is to skip the endpoint entirely whenever
-we can. Modern Spotify SSR-embeds the access token in an inline
-JSON `<script>` block in the page HTML — the same blob the web
-player's own JS reads on bootstrap. Token acquisition therefore
-tries, in order:
+we can. Token acquisition tries three sources in order:
 
 1. **`extractTokenFromPageHtml()`** — scan `script#session`,
    `script#__NEXT_DATA__`, and any other `script[type="application/json"]`
    for a known nesting path to `accessToken`. Zero network calls,
-   no Varnish surface.
+   no Varnish surface. Works when Spotify SSR-embeds the session
+   (older builds).
 2. **`fetchTokenFromEndpoint()`** — `/get_access_token` with the
    web-player headers above. Works when the page HTML doesn't
-   carry the session.
-3. **Clear error** — both methods exhausted, ask the user to
-   reload `open.spotify.com` and retry.
+   carry the session but the CDN allows the call. Gives us the
+   `isAnonymous` signal to distinguish "not signed in" from
+   "blocked."
+3. **`captureFromHook()`** — wait for the Spotify web player's
+   own JS to fire a request to any `*.spotify.com` URL, and read
+   the `Authorization: Bearer …` and `Client-Token` headers it
+   used. The actual capture happens in a tiny `installFetchHookInMainWorld`
+   function injected into the page via
+   `chrome.scripting.executeScript({ world: "MAIN" })` — MAIN
+   world is the page's own JS realm, which bypasses Spotify's
+   page-level CSP for our injection and gives us access to the
+   real `window.fetch`. The hook is dormant unless armed via
+   a `sessionStorage` flag the ISOLATED-world fetcher sets just
+   before polling, so we don't continuously harvest tokens
+   between exports. After the fetcher finishes, the flag and
+   any captured tokens are cleared from `sessionStorage` in the
+   `finally` block.
+
+The MAIN-world hook also intercepts `XMLHttpRequest` for
+robustness against future Spotify bundle changes; today the web
+player uses `fetch` for everything we care about.
+
+The hook captures both the `Authorization` bearer and the
+`Client-Token` header Spotify recently started requiring on some
+endpoints. The exporter then sends both on its own `api.spotify.com`
+requests so the requests are indistinguishable from the web
+player's own.
 
 The reliable workaround — the one Spotify's CDN can't distinguish
 from the web player itself — is to run the fetch **inside an
