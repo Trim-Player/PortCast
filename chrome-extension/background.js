@@ -483,22 +483,43 @@ async function fetchSpotifyLibraryInTab() {
       headers["Client-Token"] = tk.clientToken;
     }
 
-    // Spotify rate-limits aggressively within ~30s rolling windows
-    // and returns the wait time in the Retry-After header. We retry
-    // up to 3 times honoring that header, cap each wait at 120s so
-    // the popup never appears frozen for too long, and add a small
-    // delay between paginated pages to avoid re-triggering the
-    // limit immediately after a recovery.
+    // Spotify rate-limits in rolling windows and returns the wait
+    // time in the Retry-After header. Strategy:
+    //   - If the limit clears in ≤30s, wait it out and try once more.
+    //     One sleep, one retry; if that still 429s, the limit is real
+    //     and we should stop tying up the popup.
+    //   - If the first response says >30s, don't bother retrying —
+    //     surface the precise wait time so the user knows when to
+    //     come back. Spotify's limit extends with every failed
+    //     attempt during debugging, and looping on retries makes
+    //     things worse.
+    function formatDuration(sec) {
+      if (sec < 60) return `${sec} seconds`;
+      if (sec < 3600) {
+        const m = Math.ceil(sec / 60);
+        return `about ${m} minute${m === 1 ? "" : "s"}`;
+      }
+      const h = Math.ceil(sec / 3600);
+      return `about ${h} hour${h === 1 ? "" : "s"}`;
+    }
+
     async function spotifyFetch(url) {
-      const MAX_RETRIES = 3;
-      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      for (let attempt = 0; attempt < 2; attempt++) {
         const r = await fetch(url, { headers });
-        if (r.status !== 429 || attempt === MAX_RETRIES) return r;
-        let waitSec = parseInt(r.headers.get("Retry-After") || "5", 10);
-        if (!Number.isFinite(waitSec) || waitSec < 1) waitSec = 5;
-        waitSec = Math.min(waitSec, 120);
-        progress("rate-limited", waitSec);
-        await new Promise((res) => setTimeout(res, waitSec * 1000));
+        if (r.status !== 429) return r;
+        let waitSec = parseInt(r.headers.get("Retry-After") || "30", 10);
+        if (!Number.isFinite(waitSec) || waitSec < 1) waitSec = 30;
+        if (attempt === 0 && waitSec <= 30) {
+          progress("rate-limited", waitSec);
+          await new Promise((res) => setTimeout(res, waitSec * 1000));
+          continue;
+        }
+        throw new Error(
+          `Spotify rate-limited this token (429). Wait ${formatDuration(
+            waitSec,
+          )} and click Export again. (Each click during debugging extends ` +
+            `the limit window; that's why this is sticky right now.)`,
+        );
       }
     }
 
@@ -588,11 +609,18 @@ function humanizeError(err) {
       "manually first, then click Export."
     );
   }
+  // Messages from spotifyFetch's rate-limit path already carry a
+  // precise wait time and user instruction — surface them verbatim.
+  if (/Spotify rate-limited this token/i.test(msg)) {
+    return msg;
+  }
+  // Bare 429 from a path that bypassed our retry helper (shouldn't
+  // happen, but cover it): give the user actionable language.
   if (/\b429\b/.test(msg) || /rate limit/i.test(msg)) {
     return (
-      "Spotify rate-limited the export even after retries. Wait a " +
-      "minute or two and click Export again — their limit window " +
-      "is short."
+      "Spotify rate-limited the export. Wait a minute or two and " +
+      "click Export again — their limit window is short. " +
+      msg
     );
   }
   return msg;
