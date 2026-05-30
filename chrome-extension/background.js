@@ -180,9 +180,12 @@ function waitForTabComplete(tabId, timeoutMs = 30000) {
 // no imports, no references to outer-scope variables. The return
 // value (a structured-cloneable object) ends up in results[0].result.
 //
-// The fetches succeed where the service worker's would 403 because
-// the Origin header is now "https://open.spotify.com" — the page's
-// own origin — which Spotify's Varnish allows.
+// Token acquisition tries two sources in order:
+//   (a) the SSR-embedded session script in the page HTML — the same
+//       JSON blob Spotify's own web player reads on bootstrap; no
+//       network call, so Spotify's Varnish CDN has nothing to refuse.
+//   (b) /get_access_token with App-Platform and Accept-Language
+//       headers matching what the web player sends.
 async function fetchSpotifyLibraryInTab() {
   function progress(phase, count, done) {
     try {
@@ -195,33 +198,112 @@ async function fetchSpotifyLibraryInTab() {
     }
   }
 
-  try {
-    progress("token");
-    const tokenResp = await fetch(
+  function extractTokenFromPageHtml() {
+    // The Spotify web player embeds its initial session in one of a
+    // small set of inline JSON script tags. Shape has drifted over
+    // web-player versions, so we check the known locations and known
+    // nesting paths.
+    const candidates = [
+      document.getElementById("session"),
+      document.getElementById("__NEXT_DATA__"),
+      ...document.querySelectorAll(
+        'script[type="application/json"]',
+      ),
+    ];
+    const paths = [
+      (d) => d && d.accessToken,
+      (d) => d && d.session && d.session.accessToken,
+      (d) => d && d.props && d.props.pageProps && d.props.pageProps.accessToken,
+      (d) =>
+        d &&
+        d.props &&
+        d.props.pageProps &&
+        d.props.pageProps.session &&
+        d.props.pageProps.session.accessToken,
+    ];
+    for (const el of candidates) {
+      if (!el || !el.textContent) continue;
+      let data;
+      try {
+        data = JSON.parse(el.textContent);
+      } catch {
+        continue;
+      }
+      for (const get of paths) {
+        const t = get(data);
+        if (typeof t === "string" && t.length > 20) return t;
+      }
+    }
+    return null;
+  }
+
+  async function fetchTokenFromEndpoint() {
+    // Even from the page origin, the bare endpoint is sometimes
+    // refused by Varnish. App-Platform and Accept-Language match
+    // what the web player sends and seem to be what the CDN
+    // signature check looks for. We deliberately do NOT set
+    // cache: 'no-store' because that forces a Cache-Control header
+    // the CDN treats as bot-like.
+    const r = await fetch(
       "https://open.spotify.com/get_access_token?reason=transport&productType=web-player",
-      { credentials: "include", cache: "no-store" },
+      {
+        credentials: "include",
+        headers: {
+          "App-Platform": "WebPlayer",
+          "Accept-Language": "en",
+        },
+      },
     );
-    if (!tokenResp.ok) {
-      const body = await tokenResp.text().catch(() => "");
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
       return {
-        error: `Token endpoint ${tokenResp.status}: ${body.slice(0, 200)}`,
+        error: `Token endpoint ${r.status}: ${body.slice(0, 200)}`,
       };
     }
-    const tokenData = await tokenResp.json();
-    if (
-      !tokenData ||
-      tokenData.isAnonymous === true ||
-      !tokenData.accessToken
-    ) {
-      return { notSignedIn: true };
-    }
-    const token = tokenData.accessToken;
-    const headers = { Authorization: "Bearer " + token };
+    const d = await r.json();
+    if (d && d.isAnonymous === true) return { notSignedIn: true };
+    if (d && typeof d.accessToken === "string") return { token: d.accessToken };
+    return { error: "Token endpoint returned no accessToken." };
+  }
+
+  async function obtainToken() {
+    progress("token");
+    const fromHtml = extractTokenFromPageHtml();
+    if (fromHtml) return { token: fromHtml, source: "page-html" };
+
+    const fromEndpoint = await fetchTokenFromEndpoint().catch((e) => ({
+      error: String((e && e.message) || e),
+    }));
+    if (fromEndpoint.notSignedIn) return fromEndpoint;
+    if (fromEndpoint.token) return { token: fromEndpoint.token, source: "endpoint" };
+
+    return {
+      error:
+        "Could not obtain a Spotify access token. The page HTML didn't " +
+        "carry a session block, and Spotify's /get_access_token endpoint " +
+        "responded: " + (fromEndpoint.error || "no token") + ". " +
+        "Try reloading open.spotify.com and clicking Export again.",
+    };
+  }
+
+  try {
+    const tk = await obtainToken();
+    if (tk.notSignedIn) return { notSignedIn: true };
+    if (tk.error) return { error: tk.error };
+    const token = tk.token;
+    const headers = {
+      Authorization: "Bearer " + token,
+      "App-Platform": "WebPlayer",
+      "Accept-Language": "en",
+    };
 
     progress("me");
     const meResp = await fetch("https://api.spotify.com/v1/me", { headers });
     if (!meResp.ok) {
-      return { error: `Profile fetch failed: ${meResp.status}` };
+      const body = await meResp.text().catch(() => "");
+      return {
+        error: `Profile fetch failed: ${meResp.status} ${body.slice(0, 200)}`,
+      };
     }
     const me = await meResp.json();
 
@@ -248,7 +330,7 @@ async function fetchSpotifyLibraryInTab() {
     const savedEpisodes = await paginate("/me/episodes", "episodes");
     progress("episodes", savedEpisodes.length, true);
 
-    return { me, savedShows, savedEpisodes };
+    return { me, savedShows, savedEpisodes, tokenSource: tk.source };
   } catch (err) {
     return { error: String((err && err.message) || err) };
   }

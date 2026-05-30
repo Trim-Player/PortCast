@@ -197,13 +197,36 @@ than silently scrape something we don't fully understand.
 
 ## Why the fetch can't run in the service worker
 
-Spotify's Varnish CDN refuses any request to `/get_access_token`
-whose `Origin` request header isn't `https://open.spotify.com`,
-returning the HTML page `<title>403 URL Blocked</title>` with
-internal error `54113`. Browser fetches from a Manifest V3 service
-worker automatically carry `Origin: chrome-extension://<id>`, and
-JavaScript cannot override the `Origin` header (it's on the fetch
-spec's forbidden-header list).
+Spotify's Varnish CDN refuses requests to `/get_access_token` that
+don't match the web player's signature, returning the HTML page
+`<title>403 URL Blocked</title>` with internal error `54113`.
+Browser fetches from a Manifest V3 service worker automatically
+carry `Origin: chrome-extension://<id>`, and JavaScript cannot
+override the `Origin` header (it's on the fetch spec's
+forbidden-header list).
+
+We observed in practice that even fetching from inside an
+`open.spotify.com` tab (where the Origin is correct) still gets
+blocked unless additional headers (`App-Platform: WebPlayer`,
+`Accept-Language: en`) are sent and `cache: 'no-store'` is dropped
+(it adds `Cache-Control: no-cache` which Varnish treats as
+bot-like).
+
+So the more robust path is to skip the endpoint entirely whenever
+we can. Modern Spotify SSR-embeds the access token in an inline
+JSON `<script>` block in the page HTML — the same blob the web
+player's own JS reads on bootstrap. Token acquisition therefore
+tries, in order:
+
+1. **`extractTokenFromPageHtml()`** — scan `script#session`,
+   `script#__NEXT_DATA__`, and any other `script[type="application/json"]`
+   for a known nesting path to `accessToken`. Zero network calls,
+   no Varnish surface.
+2. **`fetchTokenFromEndpoint()`** — `/get_access_token` with the
+   web-player headers above. Works when the page HTML doesn't
+   carry the session.
+3. **Clear error** — both methods exhausted, ask the user to
+   reload `open.spotify.com` and retry.
 
 The reliable workaround — the one Spotify's CDN can't distinguish
 from the web player itself — is to run the fetch **inside an
@@ -216,9 +239,10 @@ from the web player itself — is to run the fetch **inside an
    `status === "complete"`.
 3. `chrome.scripting.executeScript({ target: { tabId }, world:
    "ISOLATED", func: fetchSpotifyLibraryInTab })` runs a
-   self-contained fetcher inside that tab. Its `Origin` is now
-   `https://open.spotify.com`, Spotify is happy, and the session
-   cookies attach automatically.
+   self-contained fetcher inside that tab. From inside it the
+   token-acquisition fallback chain runs (page HTML extraction
+   first, then the endpoint with web-player headers — see "Token
+   acquisition" below).
 4. The injected function returns the raw `/me`, `/me/shows`, and
    `/me/episodes` payloads. The service worker builds the document
    from them via `lib/portcast.js` and triggers the download.
