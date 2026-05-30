@@ -1,52 +1,54 @@
 // Service worker — owns the tab orchestration and the download.
 //
-// Architecture (revised after the v0.1 token-acquisition pain):
+// v0.3 — GraphQL (pathfinder) rewrite.
 //
-//   1. lib/spotify-hook.js is registered in manifest.json as a
-//      MAIN-world content script that runs at document_start on
-//      every open.spotify.com page. It wraps window.fetch / XHR
-//      and writes the Authorization (Bearer) + Client-Token from
-//      any authenticated *.spotify.com request into sessionStorage.
-//      It ALSO clones response bodies for /v1/me, /v1/me/shows,
-//      /v1/me/episodes into sessionStorage so we can reuse them.
+// WHY THIS REWRITE:
+// The 2026 Spotify web player no longer drives its library from the
+// REST endpoints /v1/me/shows and /v1/me/episodes. The web-player
+// token is an api-partner token: replaying it against api.spotify.com
+// /v1/* yields 401/403 (which the old code mislabeled as a 429 "rate
+// limit"). The library is now served by:
+//   POST https://api-partner.spotify.com/pathfinder/v2/query
+//   operationName: "libraryV3"
+//   filter id:     "Podcasts & Shows"
+//   pagination:    offset-based (pagingInfo.limit/offset + totalCount)
+//   auth:          Authorization: Bearer <token>  AND  Client-Token
 //
-//   2. The service worker opens (or focuses) a tab at
-//      open.spotify.com/collection/podcasts/shows — the library
-//      URL — which guarantees the player authenticates and fires
-//      a real /v1/me/shows request during bootstrap. By the time
-//      the page is "complete", the hook has captured a fresh,
-//      web-player-grade token AND the first page of the library.
+// Verified live: the persisted-query hash, the filter id, the offset
+// pagination, and the item shape (PodcastResponseWrapper) were all
+// captured from a real session before writing this.
 //
-//   3. chrome.scripting.executeScript runs a self-contained
-//      ISOLATED-world fetcher in that tab. The fetcher prefers
-//      the captured token + captured bodies. If no captured token
-//      exists, it falls back to extracting one from the page HTML,
-//      then to /get_access_token, then to polling sessionStorage
-//      for the next captured one.
-//
-// Why this design beats the v0.1 dynamic-injection approach:
-//   - The hook is in place BEFORE the page makes its first fetch,
-//     so we never miss bootstrap calls.
-//   - We never call /get_access_token unless every other path
-//     fails — sidestepping the Varnish CDN's 403 entirely.
-//   - We never re-fetch /v1/me/shows page 1 — sidestepping the
-//     window where Spotify's rate-limiter is most easily tripped
-//     during repeated debugging.
+// ARCHITECTURE (unchanged from v0.2):
+//   1. lib/spotify-hook.js (MAIN world, document_start) wraps
+//      fetch/XHR and writes the Bearer + Client-Token from any
+//      authenticated *.spotify.com request into sessionStorage.
+//   2. The service worker focuses/creates an open.spotify.com tab and
+//      navigates it to the podcast library route, which forces the
+//      player to fire a fresh libraryV3 (pathfinder) call — so the
+//      hook captures a fresh, api-partner-grade token + client-token.
+//   3. chrome.scripting.executeScript runs the ISOLATED-world fetcher,
+//      which replays libraryV3 over pathfinder and maps the GraphQL
+//      results into the REST-shaped payloads buildDocument() expects.
 
 import { buildDocument } from "./lib/portcast.js";
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
-// We open at the bare origin. We previously tried
-// "/collection/podcasts/shows" hoping to force the player to
-// fetch the library on bootstrap, but the current Spotify SPA
-// (2026) renders that route as a "page not found" inside the
-// player chrome — no auth bootstrap, nothing for the hook to
-// catch. The home page is the safest URL: it always exists,
-// always fires authenticated /v1/me and GraphQL calls during
-// bootstrap (Made-For-You, recently-played, the library
-// sidebar), and the always-installed MAIN-world hook catches
-// those calls because it's in place at document_start.
-const SPOTIFY_TAB_URL = "https://open.spotify.com/";
+
+// The library route that reliably forces a libraryV3 pathfinder call
+// during bootstrap. The SPA redirects the *main view* to
+// /collection/tracks, but the left "Your Library" sidebar still
+// fetches libraryV3 — which is exactly the call we need the hook to
+// see. (We previously tried /collection/podcasts/shows: that route
+// renders "page not found" and never authenticates.)
+const SPOTIFY_TAB_URL = "https://open.spotify.com/collection/podcasts";
+
+// GraphQL constants captured & verified from a live session.
+const PATHFINDER_URL = "https://api-partner.spotify.com/pathfinder/v2/query";
+const LIBRARY_OP = "libraryV3";
+const LIBRARY_HASH =
+  "973e511ca44261fda7eebac8b653155e7caee3675abb4fb110cc1b8c78b091c3";
+const PODCAST_FILTER_ID = "Podcasts & Shows";
+const PAGE_LIMIT = 50;
 
 let currentPort = null;
 
@@ -89,11 +91,9 @@ async function runSpotifyExport(port) {
 
   let payload;
   try {
-    // If the library URL redirected (e.g. to accounts.spotify.com
-    // because the user isn't signed in), we can't run the fetcher
-    // there — accounts.spotify.com is outside our host_permissions.
-    // Route to the not-signed-in state cleanly instead of letting
-    // executeScript fail with a confusing permission error.
+    // If the tab redirected outside open.spotify.com (e.g. to
+    // accounts.spotify.com because the user isn't signed in), we can't
+    // run the fetcher there. Route to not-signed-in cleanly.
     const tabNow = await chrome.tabs.get(tabId).catch(() => null);
     const url = tabNow && tabNow.url;
     if (!url || !url.startsWith("https://open.spotify.com/")) {
@@ -112,7 +112,7 @@ async function runSpotifyExport(port) {
       try {
         await chrome.tabs.remove(tabId);
       } catch {
-        // tab may have been closed by the user mid-run; nothing to clean up.
+        // tab may have been closed by the user mid-run; nothing to do.
       }
     }
   }
@@ -148,12 +148,8 @@ async function runSpotifyExport(port) {
   });
 
   if (typeof downloadId !== "number") {
-    // The user cancelled the Save-As dialog. Treat as a clean
-    // not-done, not an error.
-    port.postMessage({
-      type: "error",
-      message: "Download was cancelled.",
-    });
+    // User cancelled the Save-As dialog. Clean not-done, not an error.
+    port.postMessage({ type: "error", message: "Download was cancelled." });
     return;
   }
 
@@ -170,29 +166,33 @@ async function runSpotifyExport(port) {
 }
 
 async function findOrCreateSpotifyTab() {
-  // Any open.spotify.com tab works: the always-installed MAIN-world
-  // hook is in place on all of them, and any signed-in page made
-  // authenticated bootstrap calls during its load. Prefer reusing
-  // an existing tab over opening a new one so we don't churn.
-  const tabs = await chrome.tabs.query({
-    url: "https://open.spotify.com/*",
-  });
+  // Reuse an existing open.spotify.com tab if there is one; otherwise
+  // open one in the background. In BOTH cases we navigate the tab to
+  // the library route and wait for load, so the hook is guaranteed to
+  // see a fresh libraryV3 (pathfinder) call and capture a fresh
+  // token + client-token. (v0.2 reused existing tabs without
+  // navigating, so a stale tab sitting on, say, a track page would
+  // never re-fire the library call.)
+  const tabs = await chrome.tabs.query({ url: "https://open.spotify.com/*" });
   const existing = tabs.find((t) => t && t.id !== undefined);
+
   if (existing) {
-    if (existing.status !== "complete") {
-      await waitForTabComplete(existing.id);
-    }
+    await chrome.tabs.update(existing.id, { url: SPOTIFY_TAB_URL });
+    await waitForTabComplete(existing.id);
+    // Give the SPA a beat to fire its bootstrap pathfinder calls after
+    // "complete" — the document is ready before XHRs necessarily fire.
+    await sleep(1500);
     return { tabId: existing.id, createdByUs: false };
   }
 
-  // None open — create one in the background and close it on the
-  // way out so the user's window state is unchanged.
-  const tab = await chrome.tabs.create({
-    url: SPOTIFY_TAB_URL,
-    active: false,
-  });
+  const tab = await chrome.tabs.create({ url: SPOTIFY_TAB_URL, active: false });
   await waitForTabComplete(tab.id);
+  await sleep(1500);
   return { tabId: tab.id, createdByUs: true };
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 function waitForTabComplete(tabId, timeoutMs = 30000) {
@@ -214,26 +214,20 @@ function waitForTabComplete(tabId, timeoutMs = 30000) {
 
 // ----- the function that runs inside open.spotify.com -----
 //
-// chrome.scripting.executeScript serializes this function and runs
-// it in the target tab's ISOLATED world. It must be self-contained:
-// no imports, no references to outer-scope variables. The return
-// value (a structured-cloneable object) ends up in results[0].result.
-//
-// Token + data acquisition order (each falls through to the next on
-// failure):
-//   1. Token captured by the always-on MAIN-world hook from a
-//      bootstrap fetch. Zero network. Should hit ~always when
-//      opened at the library URL.
-//   2. /v1/me/shows page 1 captured by the hook — used to skip the
-//      first page-fetch of pagination (which is where Spotify's
-//      rolling rate-limit window tends to bite).
-//   3. Token from the page's SSR-embedded session JSON.
-//   4. Token from /get_access_token with web-player headers (last
-//      resort — this is what the Varnish CDN 403s).
-//   5. Wait up to 10s for a fresh hook capture from any new page
-//      fetch (covers the case where the page is loaded but no
-//      bootstrap call has fired yet).
+// Serialized by chrome.scripting.executeScript and run in the target
+// tab's ISOLATED world. Must be self-contained: no imports, no outer
+// references. Returns a structure-cloneable object.
 async function fetchSpotifyLibraryInTab() {
+  // These mirror the module-scope constants; the function is
+  // serialized, so it can't see them.
+  const PATHFINDER_URL =
+    "https://api-partner.spotify.com/pathfinder/v2/query";
+  const LIBRARY_OP = "libraryV3";
+  const LIBRARY_HASH =
+    "973e511ca44261fda7eebac8b653155e7caee3675abb4fb110cc1b8c78b091c3";
+  const PODCAST_FILTER_ID = "Podcasts & Shows";
+  const PAGE_LIMIT = 50;
+
   function progress(phase, count, done) {
     try {
       chrome.runtime.sendMessage({
@@ -241,7 +235,7 @@ async function fetchSpotifyLibraryInTab() {
         progress: { phase, count, done },
       });
     } catch {
-      // service worker may have been suspended; ignore.
+      // service worker may be suspended; ignore.
     }
   }
 
@@ -256,16 +250,6 @@ async function fetchSpotifyLibraryInTab() {
     return null;
   }
 
-  function readCapturedBodies() {
-    try {
-      const raw = sessionStorage.getItem("portcast_captured_bodies");
-      if (!raw) return {};
-      return JSON.parse(raw) || {};
-    } catch {
-      return {};
-    }
-  }
-
   function clearCapturedState() {
     try {
       sessionStorage.removeItem("portcast_captured_token");
@@ -276,10 +260,6 @@ async function fetchSpotifyLibraryInTab() {
   }
 
   function extractTokenFromPageHtml() {
-    // The Spotify web player embeds its initial session in one of a
-    // small set of inline JSON script tags. Shape has drifted over
-    // web-player versions, so we check the known locations and known
-    // nesting paths.
     const candidates = [
       document.getElementById("session"),
       document.getElementById("__NEXT_DATA__"),
@@ -288,7 +268,8 @@ async function fetchSpotifyLibraryInTab() {
     const paths = [
       (d) => d && d.accessToken,
       (d) => d && d.session && d.session.accessToken,
-      (d) => d && d.props && d.props.pageProps && d.props.pageProps.accessToken,
+      (d) =>
+        d && d.props && d.props.pageProps && d.props.pageProps.accessToken,
       (d) =>
         d &&
         d.props &&
@@ -312,40 +293,7 @@ async function fetchSpotifyLibraryInTab() {
     return null;
   }
 
-  async function fetchTokenFromEndpoint() {
-    // Even from the page origin, the bare endpoint is sometimes
-    // refused by Varnish. App-Platform and Accept-Language match
-    // what the web player sends and seem to be what the CDN
-    // signature check looks for. We deliberately do NOT set
-    // cache: 'no-store' because that forces a Cache-Control header
-    // the CDN treats as bot-like.
-    const r = await fetch(
-      "https://open.spotify.com/get_access_token?reason=transport&productType=web-player",
-      {
-        credentials: "include",
-        headers: {
-          "App-Platform": "WebPlayer",
-          "Accept-Language": "en",
-        },
-      },
-    );
-    if (!r.ok) {
-      const body = await r.text().catch(() => "");
-      return {
-        error: `Token endpoint ${r.status}: ${body.slice(0, 200)}`,
-      };
-    }
-    const d = await r.json();
-    if (d && d.isAnonymous === true) return { notSignedIn: true };
-    if (d && typeof d.accessToken === "string") return { token: d.accessToken };
-    return { error: "Token endpoint returned no accessToken." };
-  }
-
   async function waitForFreshHookCapture(timeoutMs) {
-    // Used only when nothing else worked. Records "now", then polls
-    // for a captured token with a timestamp ≥ now — i.e. a fresh
-    // capture from a new page fetch, not the stale bootstrap one
-    // we'd have already returned at step 1.
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
       try {
@@ -363,43 +311,83 @@ async function fetchSpotifyLibraryInTab() {
     return null;
   }
 
+  // The pathfinder/api-partner endpoint requires BOTH the Bearer and
+  // the Client-Token. The hook captures both; the page HTML fallback
+  // only yields a Bearer (no client-token), which pathfinder rejects —
+  // so we strongly prefer the hook capture and only fall back to HTML
+  // when there's truly no captured token.
   async function obtainToken() {
     progress("token");
 
-    // (1) Token already captured by the always-on hook from the
-    // page's bootstrap. This is the happy path when opened at
-    // /collection/podcasts/shows.
+    // (1) Fresh capture from the library bootstrap we just forced by
+    //     navigating the tab. Happy path — has client-token too.
     const cached = readCapturedToken();
-    if (cached) return { ...cached, source: "hook-bootstrap" };
-
-    // (2) Token embedded in the page HTML — works on older builds.
-    const fromHtml = extractTokenFromPageHtml();
-    if (fromHtml) return { token: fromHtml, source: "page-html" };
-
-    // (3) /get_access_token with web-player headers. Gives us the
-    // isAnonymous signal even if it returns a token we don't need.
-    const fromEndpoint = await fetchTokenFromEndpoint().catch((e) => ({
-      error: String((e && e.message) || e),
-    }));
-    if (fromEndpoint.notSignedIn) return fromEndpoint;
-    if (fromEndpoint.token) {
-      return { token: fromEndpoint.token, source: "endpoint" };
+    if (cached && cached.clientToken) {
+      return { ...cached, source: "hook-bootstrap" };
     }
 
-    // (4) Wait for any new page fetch to surface a token.
+    // (2) Wait briefly for the bootstrap libraryV3 to surface a
+    //     capture (covers a slow XHR after "complete").
     progress("token-waiting");
-    const captured = await waitForFreshHookCapture(10000);
-    if (captured) return { ...captured, source: "fetch-hook-poll" };
+    const fresh = await waitForFreshHookCapture(10000);
+    if (fresh && fresh.clientToken) {
+      return { ...fresh, source: "fetch-hook-poll" };
+    }
+
+    // (3) Last resort: a token without client-token. pathfinder may
+    //     reject this, but we surface a precise error if so rather
+    //     than failing silently.
+    if (cached && cached.token) {
+      return { ...cached, source: "hook-no-client-token" };
+    }
+    const fromHtml = extractTokenFromPageHtml();
+    if (fromHtml) {
+      return { token: fromHtml, clientToken: null, source: "page-html" };
+    }
 
     return {
       error:
-        "Could not obtain a Spotify access token. The page loaded but " +
-        "never authenticated with the API (hook caught nothing during " +
-        "bootstrap or in the 10s after); the page HTML had no embedded " +
-        "session block; /get_access_token returned: " +
-        (fromEndpoint.error || "no token") +
-        ". Reload open.spotify.com, sign in, navigate to Your Library → " +
-        "Podcasts, and click Export again.",
+        "Could not obtain a Spotify api-partner token. The library " +
+        "page loaded but the hook never captured an authenticated " +
+        "pathfinder request (no Bearer + Client-Token pair) during " +
+        "bootstrap or in the 10s after. Reload open.spotify.com, " +
+        "confirm you're signed in, open Your Library, and click " +
+        "Export again.",
+    };
+  }
+
+  // --- GraphQL helpers ---
+
+  function uriToId(uri) {
+    return uri ? String(uri).split(":").pop() : null;
+  }
+
+  // Map a libraryV3 PodcastResponseWrapper item into the REST shape
+  // that portcast.js's subscriptionFromSavedShow() expects:
+  //   { added_at, show: { id, name, publisher (string), images:[{url}] } }
+  // NOTE: GraphQL returns publisher as an object {name}; the document
+  // builder wants a plain string — so we flatten it here. (Verified
+  // live: this flattening is required, not optional.)
+  function mapShowItem(it) {
+    const wrapper = (it && it.item) || {};
+    const d = wrapper.data || {};
+    const publisher =
+      d.publisher && typeof d.publisher === "object"
+        ? d.publisher.name || null
+        : d.publisher || null;
+    const images = ((d.coverArt && d.coverArt.sources) || []).map((s) => ({
+      url: s.url,
+      height: s.height,
+      width: s.width,
+    }));
+    return {
+      added_at: (it && it.addedAt && it.addedAt.isoString) || null,
+      show: {
+        id: uriToId(wrapper._uri || d.uri),
+        name: d.name || null,
+        publisher,
+        images,
+      },
     };
   }
 
@@ -413,29 +401,19 @@ async function fetchSpotifyLibraryInTab() {
       clearCapturedState();
       return { error: tk.error };
     }
-    const token = tk.token;
-    const headers = {
-      Authorization: "Bearer " + token,
-      "App-Platform": "WebPlayer",
-      "Accept-Language": "en",
-    };
-    // Client-Token is required by some api.spotify.com endpoints as
-    // of mid-2024; attach it when the hook caught one. Bearer alone
-    // works for /me/* in most cases, so this is belt+braces.
-    if (tk.clientToken) {
-      headers["Client-Token"] = tk.clientToken;
-    }
 
-    // Spotify rate-limits in rolling windows and returns the wait
-    // time in the Retry-After header. Strategy:
-    //   - If the limit clears in ≤30s, wait it out and try once more.
-    //     One sleep, one retry; if that still 429s, the limit is real
-    //     and we should stop tying up the popup.
-    //   - If the first response says >30s, don't bother retrying —
-    //     surface the precise wait time so the user knows when to
-    //     come back. Spotify's limit extends with every failed
-    //     attempt during debugging, and looping on retries makes
-    //     things worse.
+    const baseHeaders = {
+      authorization: "Bearer " + tk.token,
+      "content-type": "application/json",
+      accept: "application/json",
+      "app-platform": "WebPlayer",
+      "accept-language": "en",
+    };
+    if (tk.clientToken) baseHeaders["client-token"] = tk.clientToken;
+
+    // pathfinder POST with one retry honoring a real 429 Retry-After.
+    // ONLY a genuine HTTP 429 is treated as a rate limit (the old code
+    // mislabeled 401/403 as 429 — fixed).
     function formatDuration(sec) {
       if (sec < 60) return `${sec} seconds`;
       if (sec < 3600) {
@@ -446,106 +424,158 @@ async function fetchSpotifyLibraryInTab() {
       return `about ${h} hour${h === 1 ? "" : "s"}`;
     }
 
-    async function spotifyFetch(url) {
+    async function pathfinder(body) {
       for (let attempt = 0; attempt < 2; attempt++) {
-        const r = await fetch(url, { headers });
-        if (r.status !== 429) return r;
-        let waitSec = parseInt(r.headers.get("Retry-After") || "30", 10);
-        if (!Number.isFinite(waitSec) || waitSec < 1) waitSec = 30;
-        if (attempt === 0 && waitSec <= 30) {
-          progress("rate-limited", waitSec);
-          await new Promise((res) => setTimeout(res, waitSec * 1000));
-          continue;
+        const r = await fetch(PATHFINDER_URL, {
+          method: "POST",
+          headers: baseHeaders,
+          body: JSON.stringify(body),
+        });
+
+        if (r.status === 429) {
+          let waitSec = parseInt(r.headers.get("Retry-After") || "30", 10);
+          if (!Number.isFinite(waitSec) || waitSec < 1) waitSec = 30;
+          if (attempt === 0 && waitSec <= 30) {
+            progress("rate-limited", waitSec);
+            await new Promise((res) => setTimeout(res, waitSec * 1000));
+            continue;
+          }
+          throw new Error(
+            `Spotify rate-limited this request (HTTP 429). ` +
+              `Try again in ${formatDuration(waitSec)}.`,
+          );
         }
-        throw new Error(
-          `Spotify rate-limited this token (429). Wait ${formatDuration(
-            waitSec,
-          )} and click Export again. (Each click during debugging extends ` +
-            `the limit window; that's why this is sticky right now.)`,
-        );
-      }
-    }
 
-    // The hook stashes raw response bodies for /v1/me, /v1/me/shows,
-    // /v1/me/episodes when the page fetched them during bootstrap.
-    // We treat each captured body as "page already in hand" and only
-    // hit the network for `next` links the captures don't cover.
-    const cachedBodies = readCapturedBodies();
-
-    function cachedJson(predicate) {
-      for (const [url, body] of Object.entries(cachedBodies)) {
-        if (!predicate(url)) continue;
-        try {
-          return { url, json: JSON.parse(body) };
-        } catch {
-          // captured body wasn't valid JSON — Spotify may have served
-          // a CDN error page; skip and let the API path try.
+        if (r.status === 401 || r.status === 403) {
+          const t = await r.text().catch(() => "");
+          throw new Error(
+            `Spotify rejected the token (HTTP ${r.status}). This is an ` +
+              `authentication/CDN issue, not a rate limit. The captured ` +
+              `web-player token may be missing its Client-Token or may ` +
+              `have expired. Reload open.spotify.com (signed in) and ` +
+              `Export again. ${t.slice(0, 120)}`,
+          );
         }
-      }
-      return null;
-    }
 
-    progress("me");
-    let me;
-    const cachedMe = cachedJson((u) => /\/v1\/me(?:\?|$)/.test(u));
-    if (cachedMe && cachedMe.json && cachedMe.json.id) {
-      me = cachedMe.json;
-    } else {
-      const meResp = await spotifyFetch("https://api.spotify.com/v1/me");
-      if (!meResp.ok) {
-        const body = await meResp.text().catch(() => "");
-        clearCapturedState();
-        return {
-          error: `Profile fetch failed: ${meResp.status} ${body.slice(0, 200)}`,
-        };
-      }
-      me = await meResp.json();
-    }
-
-    async function paginate(path, phase, urlPredicate) {
-      const items = [];
-      let next = null;
-
-      // Seed pagination from a captured first page if we have one.
-      const seed = cachedJson(urlPredicate);
-      if (seed && Array.isArray(seed.json.items)) {
-        items.push(...seed.json.items);
-        next = seed.json.next || null;
-        progress(phase, items.length);
-        if (next) await new Promise((res) => setTimeout(res, 250));
-      } else {
-        next = "https://api.spotify.com/v1" + path + "?limit=50";
-      }
-
-      while (next) {
-        const r = await spotifyFetch(next);
         if (!r.ok) {
-          throw new Error(path + " failed: " + r.status);
+          const t = await r.text().catch(() => "");
+          throw new Error(`pathfinder ${r.status}: ${t.slice(0, 160)}`);
         }
-        const page = await r.json();
-        const got = Array.isArray(page.items) ? page.items : [];
-        items.push(...got);
-        progress(phase, items.length);
-        next = page.next || null;
-        // Small courtesy delay between pages. Cheap insurance
-        // against re-tripping the rate limit on the next page.
-        if (next) await new Promise((res) => setTimeout(res, 250));
+
+        const j = await r.json();
+        if (j && j.errors && j.errors.length) {
+          throw new Error(
+            "pathfinder GraphQL error: " +
+              (j.errors[0] && j.errors[0].message
+                ? j.errors[0].message
+                : JSON.stringify(j.errors[0])),
+          );
+        }
+        return j;
       }
-      return items;
     }
 
-    const savedShows = await paginate(
-      "/me/shows",
-      "shows",
-      (u) => /\/v1\/me\/shows\b/.test(u),
-    );
+    function libraryBody(offset) {
+      return {
+        variables: {
+          filters: [PODCAST_FILTER_ID],
+          order: null,
+          textFilter: "",
+          features: [
+            "LIKED_SONGS",
+            "YOUR_EPISODES_V2",
+            "PRERELEASES",
+            "PRERELEASES_V2",
+            "CLIPS",
+            "EVENTS",
+          ],
+          limit: PAGE_LIMIT,
+          offset,
+          flatten: false,
+          expandedFolders: [],
+          folderUri: null,
+          includeFoldersWhenFlattening: true,
+        },
+        operationName: LIBRARY_OP,
+        extensions: {
+          persistedQuery: { version: 1, sha256Hash: LIBRARY_HASH },
+        },
+      };
+    }
+
+    // --- profile (me) ---
+    // pathfinder doesn't expose the classic /v1/me profile fields the
+    // document's optional owner block uses. owner is optional in
+    // portcast.js (ownerFromMe returns null when absent), so we send a
+    // minimal me. If you later capture a profile GraphQL op, slot it
+    // here. We try the embedded session JSON for a display name first.
+    progress("me");
+    let me = { id: null, display_name: null, email: null };
+    try {
+      const sess = document.getElementById("session");
+      if (sess && sess.textContent) {
+        const s = JSON.parse(sess.textContent);
+        const id =
+          (s && s.userId) ||
+          (s && s.user && s.user.id) ||
+          (s && s.session && s.session.userId) ||
+          null;
+        if (id) me.id = id;
+      }
+    } catch {}
+
+    // --- saved shows (offset pagination) ---
+    progress("shows", 0);
+    const savedShows = [];
+    let offset = 0;
+    let total = Infinity;
+    let guard = 0; // hard cap so a misbehaving API can't infinite-loop
+    while (offset < total && guard < 200) {
+      guard += 1;
+      const j = await pathfinder(libraryBody(offset));
+      const lib = j && j.data && j.data.me && j.data.me.libraryV3;
+
+      if (!lib || lib.__typename !== "LibraryPage") {
+        // e.g. LibraryInvalidFilterIdError → Spotify changed the filter
+        // id. Fail loudly with the message so it's diagnosable.
+        const m = (lib && lib.message) || JSON.stringify(lib);
+        throw new Error("Library query returned: " + m);
+      }
+
+      if (typeof lib.totalCount === "number") total = lib.totalCount;
+      const items = Array.isArray(lib.items) ? lib.items : [];
+      const shows = items.filter(
+        (it) => it && it.item && it.item.__typename === "PodcastResponseWrapper",
+      );
+      for (const it of shows) savedShows.push(mapShowItem(it));
+
+      progress("shows", savedShows.length);
+
+      if (items.length === 0) break;
+      offset += PAGE_LIMIT;
+      await new Promise((res) => setTimeout(res, 200)); // courtesy delay
+    }
     progress("shows", savedShows.length, true);
 
-    const savedEpisodes = await paginate(
-      "/me/episodes",
-      "episodes",
-      (u) => /\/v1\/me\/episodes\b/.test(u),
-    );
+    // --- saved episodes ("Your Episodes") ---
+    // The modern player serves individually-saved episodes from a
+    // separate pathfinder operation that we could NOT verify here
+    // because this account has zero saved episodes (the empty "Your
+    // Episodes" page fires no content query). Rather than ship a
+    // guessed/unverified hash that could 400 the whole export, we
+    // return an empty list. Saved shows — the primary payload — are
+    // unaffected. episodeFromSavedEpisode() simply produces nothing
+    // for an empty list, which is valid.
+    //
+    // TODO(episodes): capture operationName + sha256Hash + the item
+    // shape from an account WITH saved episodes, add a map function
+    // that emits the REST shape episodeFromSavedEpisode() expects
+    //   { episode: { id, name, duration_ms, release_date,
+    //       release_date_precision, resume_point:{fully_played,
+    //       resume_position_ms}, show:{id} } }
+    // and paginate it the same way as savedShows above.
+    progress("episodes", 0);
+    const savedEpisodes = [];
     progress("episodes", savedEpisodes.length, true);
 
     clearCapturedState();
@@ -566,9 +596,6 @@ function makeFilename(userId, platformId) {
 }
 
 function jsonToDataUrl(obj) {
-  // Service workers can't use URL.createObjectURL, so we inline the
-  // JSON as a data: URL. PortCast files are tens of KB to low MB,
-  // well under Chrome's data-URL size limit.
   const json = JSON.stringify(obj, null, 2);
   return (
     "data:application/vnd.portcast+json;charset=utf-8," +
@@ -579,15 +606,23 @@ function jsonToDataUrl(obj) {
 function humanizeError(err) {
   if (!err) return "Unknown error.";
   const msg = String(err.message || err);
-  // Diagnostics we've already authored carry specific debugging info
-  // — pass them through verbatim instead of replacing with a canned
-  // line that hides which fallback failed.
-  if (msg.indexOf("Could not obtain a Spotify access token") !== -1) {
+
+  if (msg.indexOf("Could not obtain a Spotify api-partner token") !== -1) {
     return msg;
   }
-  // Bare Varnish block page surfaces from a raw API error, never
-  // from our own diagnostic — match the actual HTML signature
-  // rather than the bare "403" substring.
+  if (/Spotify rejected the token/i.test(msg)) {
+    return msg; // already precise + actionable
+  }
+  if (/Spotify rate-limited this request/i.test(msg)) {
+    return msg; // genuine 429 with real wait time
+  }
+  if (/Library query returned/i.test(msg)) {
+    return (
+      "Spotify's library API changed shape (the GraphQL filter id or " +
+      "query hash no longer matches). " +
+      msg
+    );
+  }
   if (/URL Blocked|Error\s+54113/i.test(msg)) {
     return (
       "Spotify's CDN blocked the request. Open https://open.spotify.com " +
@@ -596,22 +631,8 @@ function humanizeError(err) {
   }
   if (/timed out waiting for Spotify to load/i.test(msg)) {
     return (
-      "Spotify took too long to load. Try opening open.spotify.com " +
-      "manually first, then click Export."
-    );
-  }
-  // Messages from spotifyFetch's rate-limit path already carry a
-  // precise wait time and user instruction — surface them verbatim.
-  if (/Spotify rate-limited this token/i.test(msg)) {
-    return msg;
-  }
-  // Bare 429 from a path that bypassed our retry helper (shouldn't
-  // happen, but cover it): give the user actionable language.
-  if (/\b429\b/.test(msg) || /rate limit/i.test(msg)) {
-    return (
-      "Spotify rate-limited the export. Wait a minute or two and " +
-      "click Export again — their limit window is short. " +
-      msg
+      "Spotify took too long to load. Open open.spotify.com manually " +
+      "first, then click Export."
     );
   }
   return msg;
