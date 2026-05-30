@@ -483,8 +483,27 @@ async function fetchSpotifyLibraryInTab() {
       headers["Client-Token"] = tk.clientToken;
     }
 
+    // Spotify rate-limits aggressively within ~30s rolling windows
+    // and returns the wait time in the Retry-After header. We retry
+    // up to 3 times honoring that header, cap each wait at 120s so
+    // the popup never appears frozen for too long, and add a small
+    // delay between paginated pages to avoid re-triggering the
+    // limit immediately after a recovery.
+    async function spotifyFetch(url) {
+      const MAX_RETRIES = 3;
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        const r = await fetch(url, { headers });
+        if (r.status !== 429 || attempt === MAX_RETRIES) return r;
+        let waitSec = parseInt(r.headers.get("Retry-After") || "5", 10);
+        if (!Number.isFinite(waitSec) || waitSec < 1) waitSec = 5;
+        waitSec = Math.min(waitSec, 120);
+        progress("rate-limited", waitSec);
+        await new Promise((res) => setTimeout(res, waitSec * 1000));
+      }
+    }
+
     progress("me");
-    const meResp = await fetch("https://api.spotify.com/v1/me", { headers });
+    const meResp = await spotifyFetch("https://api.spotify.com/v1/me");
     if (!meResp.ok) {
       const body = await meResp.text().catch(() => "");
       return {
@@ -497,7 +516,7 @@ async function fetchSpotifyLibraryInTab() {
       const items = [];
       let next = "https://api.spotify.com/v1" + path + "?limit=50";
       while (next) {
-        const r = await fetch(next, { headers });
+        const r = await spotifyFetch(next);
         if (!r.ok) {
           throw new Error(path + " failed: " + r.status);
         }
@@ -506,6 +525,9 @@ async function fetchSpotifyLibraryInTab() {
         items.push(...got);
         progress(phase, items.length);
         next = page.next || null;
+        // Small courtesy delay between pages. Cheap insurance
+        // against re-tripping the rate limit on the next page.
+        if (next) await new Promise((res) => setTimeout(res, 250));
       }
       return items;
     }
@@ -564,6 +586,13 @@ function humanizeError(err) {
     return (
       "Spotify took too long to load. Try opening open.spotify.com " +
       "manually first, then click Export."
+    );
+  }
+  if (/\b429\b/.test(msg) || /rate limit/i.test(msg)) {
+    return (
+      "Spotify rate-limited the export even after retries. Wait a " +
+      "minute or two and click Export again — their limit window " +
+      "is short."
     );
   }
   return msg;
