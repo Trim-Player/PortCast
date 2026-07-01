@@ -89,6 +89,10 @@ button.primary {
 
 button.primary:hover { filter: brightness(0.95); }
 
+button + button { margin-top: 8px; }
+
+.hidden { display: none !important; }
+
 code {
   font-size: 12px;
   background: #f3f3f3;

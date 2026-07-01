@@ -26,3 +26,9 @@ Thumbs.db
 .env.*
 !.env.example
 *.local
+
+# Local captures, tooling, and data dumps (not versioned)
+captures/
+tools/
+*.portcast.json
+_shots/

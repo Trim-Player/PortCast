@@ -5,12 +5,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 
+import { normalizeReleaseDate } from "../lib/portcast.js";
 import {
-  buildDocument,
-  normalizeReleaseDate,
+  buildSpotifyDocument,
   subscriptionFromSavedShow,
   episodeFromSavedEpisode,
-} from "../lib/portcast.js";
+} from "../lib/platforms/spotify.js";
 
 import {
   CAPTURED_AT,
@@ -20,7 +20,7 @@ import {
 } from "./fixtures.mjs";
 
 function documentFromFixtures() {
-  return buildDocument({
+  return buildSpotifyDocument({
     me: me(),
     savedShows: savedShows(),
     savedEpisodes: savedEpisodes(),
@@ -92,19 +92,22 @@ test("owner is populated from /me", () => {
   assert.equal(doc.owner.email, "trimplayerapp@gmail.com");
 });
 
-test("completeness pins episode section as current-state-only", () => {
+test("completeness now reports both sections as full", () => {
+  // Switched 2026-06-01 — episodes is now sourced from
+  // queryPodcastEpisodes (per-show), so we have every episode of
+  // every followed show, not just individually-saved ones.
   const doc = documentFromFixtures();
   const levels = Object.fromEntries(
     doc.completeness.map((c) => [c.section, c.level]),
   );
   assert.deepEqual(levels, {
     subscriptions: "full",
-    episodes: "current-state-only",
+    episodes: "full",
   });
 });
 
 test("empty library still produces a valid document", () => {
-  const doc = buildDocument({
+  const doc = buildSpotifyDocument({
     me: null,
     savedShows: [],
     savedEpisodes: [],

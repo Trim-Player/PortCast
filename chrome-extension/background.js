@@ -30,7 +30,13 @@
 //      which replays libraryV3 over pathfinder and maps the GraphQL
 //      results into the REST-shaped payloads buildDocument() expects.
 
-import { buildDocument } from "./lib/portcast.js";
+import { buildSpotifyDocument } from "./lib/platforms/spotify.js";
+import {
+  buildYouTubeDocument,
+  PODCASTS_TAB_PARAMS,
+  FE_CHANNELS,
+  FE_HISTORY,
+} from "./lib/platforms/youtube.js";
 
 const EXTENSION_VERSION = chrome.runtime.getManifest().version;
 
@@ -50,6 +56,20 @@ const LIBRARY_HASH =
 const PODCAST_FILTER_ID = "Podcasts & Shows";
 const PAGE_LIMIT = 50;
 
+// queryPodcastEpisodes — per-show episodes operation. Verified live
+// 2026-06-01 against open.spotify.com/show/{id}. Returns each episode
+// with name, duration.totalMilliseconds, releaseDate.isoString, and
+// playedState ({playPositionMilliseconds, state in NOT_STARTED|STARTED|
+// COMPLETED}). Replaces the prior /me/episodes (saved-only) approach
+// which left the export's episodes[] empty.
+const EPISODES_OP = "queryPodcastEpisodes";
+const EPISODES_HASH =
+  "06046f9b939d56c8eb7cdbb687da938de1164c006871aec91dc26e4dc7d8eb08";
+// Hard cap per show. A long-running show can have hundreds of
+// episodes; 500 is enough to cover Acquired-class shows entirely
+// (~200 eps) and keeps export under ~30s for a 5-show library.
+const EPISODES_PER_SHOW_CAP = 500;
+
 let currentPort = null;
 
 chrome.runtime.onConnect.addListener((port) => {
@@ -62,15 +82,18 @@ chrome.runtime.onConnect.addListener((port) => {
 
   port.onMessage.addListener(async (msg) => {
     if (msg.type !== "start") return;
-    if (msg.platform && msg.platform !== "spotify") {
-      port.postMessage({
-        type: "error",
-        message: `Unknown platform: ${msg.platform}`,
-      });
-      return;
-    }
+    const platform = msg.platform || "spotify";
     try {
-      await runSpotifyExport(port);
+      if (platform === "spotify") {
+        await runSpotifyExport(port);
+      } else if (platform === "youtube") {
+        await runYouTubeExport(port);
+      } else {
+        port.postMessage({
+          type: "error",
+          message: `Unknown platform: ${platform}`,
+        });
+      }
     } catch (err) {
       port.postMessage({ type: "error", message: humanizeError(err) });
     }
@@ -80,8 +103,10 @@ chrome.runtime.onConnect.addListener((port) => {
 // Progress events come from the injected fetcher via
 // chrome.runtime.sendMessage and get forwarded to the popup port.
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg && msg.type === "spotify-progress" && currentPort) {
-    currentPort.postMessage({ type: "progress", progress: msg.progress });
+  if (msg && currentPort) {
+    if (msg.type === "spotify-progress" || msg.type === "youtube-progress") {
+      currentPort.postMessage({ type: "progress", progress: msg.progress });
+    }
   }
 });
 
@@ -128,12 +153,48 @@ async function runSpotifyExport(port) {
     return;
   }
 
-  const doc = buildDocument({
+  const doc = buildSpotifyDocument({
     me: payload.me,
     savedShows: payload.savedShows,
     savedEpisodes: payload.savedEpisodes,
     generatorVersion: EXTENSION_VERSION,
   });
+
+  // Attach a non-schema diagnostic block so we can diff what the
+  // exporter saw against what the user expected. Stripped on import.
+  doc._diagnostic = {
+    playedStateCounts: payload.playedStateCounts || {},
+    playedStateSamples: payload.playedStateSamples || [],
+    perShow: (payload.episodeFetchDiagnostics || []).map((d) => ({
+      showId: d.showId,
+      pagesFetched: d.pagesFetched,
+      episodes: d.episodes,
+      lastErr: d.lastErr,
+    })),
+  };
+
+  // If episodes came back empty despite having subscribed shows,
+  // surface the per-show diagnostics so we can see WHY rather than
+  // shipping a silently-empty file like we did pre-fix.
+  if (
+    (payload.savedShows || []).length > 0 &&
+    (payload.savedEpisodes || []).length === 0
+  ) {
+    const diag = payload.episodeFetchDiagnostics || [];
+    const summary = diag
+      .map(
+        (d) =>
+          `show=${d.showId} pages=${d.pagesFetched} eps=${d.episodes}` +
+          (d.lastErr ? ` ERR=${d.lastErr.slice(0, 240)}` : ""),
+      )
+      .join(" | ");
+    throw new Error(
+      "Spotify export produced 0 episodes for " +
+        payload.savedShows.length +
+        " shows. Per-show diagnostics: " +
+        (summary || "(none)"),
+    );
+  }
 
   port.postMessage({ type: "progress", progress: { phase: "download" } });
   const filename = makeFilename(
@@ -191,6 +252,129 @@ async function findOrCreateSpotifyTab() {
   return { tabId: tab.id, createdByUs: true };
 }
 
+// Landing route that reliably forces an authenticated InnerTube /browse
+// call during bootstrap so the youtube-hook captures fresh headers
+// (Authorization SAPISIDHASH, x-youtube-client-version, x-goog-visitor-id).
+// /feed/channels is the user's subscribed-channels list and is the first
+// API call the adapter makes anyway.
+const YOUTUBE_TAB_URL = "https://www.youtube.com/feed/channels";
+
+async function findOrCreateYouTubeTab() {
+  const tabs = await chrome.tabs.query({ url: "https://www.youtube.com/*" });
+  const existing = tabs.find((t) => t && t.id !== undefined);
+  if (existing) {
+    await chrome.tabs.update(existing.id, { url: YOUTUBE_TAB_URL });
+    await waitForYouTubeTabComplete(existing.id);
+    await sleep(2000);
+    return { tabId: existing.id, createdByUs: false };
+  }
+  const tab = await chrome.tabs.create({
+    url: YOUTUBE_TAB_URL,
+    active: false,
+  });
+  await waitForYouTubeTabComplete(tab.id);
+  await sleep(2000);
+  return { tabId: tab.id, createdByUs: true };
+}
+
+function waitForYouTubeTabComplete(tabId, timeoutMs = 30000) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error("Timed out waiting for YouTube to load."));
+    }, timeoutMs);
+    const listener = (id, info) => {
+      if (id === tabId && info.status === "complete") {
+        clearTimeout(timer);
+        chrome.tabs.onUpdated.removeListener(listener);
+        resolve();
+      }
+    };
+    chrome.tabs.onUpdated.addListener(listener);
+  });
+}
+
+async function runYouTubeExport(port) {
+  port.postMessage({ type: "progress", progress: { phase: "tab" } });
+  const { tabId, createdByUs } = await findOrCreateYouTubeTab();
+
+  let payload;
+  try {
+    const tabNow = await chrome.tabs.get(tabId).catch(() => null);
+    const url = tabNow && tabNow.url;
+    if (!url || !url.startsWith("https://www.youtube.com/")) {
+      port.postMessage({ type: "not-signed-in" });
+      return;
+    }
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: "ISOLATED",
+      func: fetchYouTubeLibraryInTab,
+      args: [PODCASTS_TAB_PARAMS, FE_CHANNELS, FE_HISTORY],
+    });
+    payload = results && results[0] && results[0].result;
+  } finally {
+    if (createdByUs) {
+      try {
+        await chrome.tabs.remove(tabId);
+      } catch {}
+    }
+  }
+
+  if (!payload) {
+    throw new Error("YouTube page returned no response.");
+  }
+  if (payload.error) {
+    throw new Error(payload.error);
+  }
+  if (payload.notSignedIn) {
+    port.postMessage({ type: "not-signed-in" });
+    return;
+  }
+
+  const doc = buildYouTubeDocument({
+    identity: payload.identity,
+    podcasts: payload.podcasts,
+    videos: payload.videos,
+    generatorVersion: EXTENSION_VERSION,
+  });
+
+  doc._diagnostic = {
+    historyDiag: payload.historyDiag || null,
+    podcastCount: (payload.podcasts || []).length,
+    videoCount: (payload.videos || []).length,
+  };
+
+  port.postMessage({ type: "progress", progress: { phase: "download" } });
+  const filename = makeFilename(
+    (payload.identity && payload.identity.channelId) || "",
+    "youtube",
+  );
+  const dataUrl = jsonToDataUrl(doc);
+  const downloadId = await chrome.downloads.download({
+    url: dataUrl,
+    filename,
+    saveAs: true,
+  });
+
+  if (typeof downloadId !== "number") {
+    port.postMessage({ type: "error", message: "Download was cancelled." });
+    return;
+  }
+
+  port.postMessage({
+    type: "done",
+    filename,
+    summary: {
+      userId: (payload.identity && payload.identity.channelId) || null,
+      displayName: (payload.identity && payload.identity.displayName) || null,
+      subscriptions: doc.subscriptions.length,
+      episodes: doc.episodes.length,
+    },
+  });
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -227,12 +411,16 @@ async function fetchSpotifyLibraryInTab() {
     "973e511ca44261fda7eebac8b653155e7caee3675abb4fb110cc1b8c78b091c3";
   const PODCAST_FILTER_ID = "Podcasts & Shows";
   const PAGE_LIMIT = 50;
+  const EPISODES_OP = "queryPodcastEpisodes";
+  const EPISODES_HASH =
+    "06046f9b939d56c8eb7cdbb687da938de1164c006871aec91dc26e4dc7d8eb08";
+  const EPISODES_PER_SHOW_CAP = 500;
 
-  function progress(phase, count, done) {
+  function progress(phase, count, done, extra) {
     try {
       chrome.runtime.sendMessage({
         type: "spotify-progress",
-        progress: { phase, count, done },
+        progress: { phase, count, done, ...(extra || {}) },
       });
     } catch {
       // service worker may be suspended; ignore.
@@ -557,29 +745,740 @@ async function fetchSpotifyLibraryInTab() {
     }
     progress("shows", savedShows.length, true);
 
-    // --- saved episodes ("Your Episodes") ---
-    // The modern player serves individually-saved episodes from a
-    // separate pathfinder operation that we could NOT verify here
-    // because this account has zero saved episodes (the empty "Your
-    // Episodes" page fires no content query). Rather than ship a
-    // guessed/unverified hash that could 400 the whole export, we
-    // return an empty list. Saved shows — the primary payload — are
-    // unaffected. episodeFromSavedEpisode() simply produces nothing
-    // for an empty list, which is valid.
+    // --- episodes per show (queryPodcastEpisodes) ---
     //
-    // TODO(episodes): capture operationName + sha256Hash + the item
-    // shape from an account WITH saved episodes, add a map function
-    // that emits the REST shape episodeFromSavedEpisode() expects
-    //   { episode: { id, name, duration_ms, release_date,
+    // For each subscribed show, fetch its episodes — Spotify exposes
+    // playedState per episode (NOT_STARTED / STARTED / COMPLETED +
+    // playPositionMilliseconds) only through this operation, so this
+    // is also our resume-position source. We rewrite the GraphQL
+    // shape to the REST shape episodeFromSavedEpisode() expects:
+    //   { added_at, episode: { id, name, duration_ms, release_date,
     //       release_date_precision, resume_point:{fully_played,
     //       resume_position_ms}, show:{id} } }
-    // and paginate it the same way as savedShows above.
+    // Verified live 2026-06-01 against /show/{id}.
+    function episodesBody(showUri, offset) {
+      return {
+        variables: {
+          uri: showUri,
+          offset,
+          limit: PAGE_LIMIT,
+          includeEpisodeContentRatingsV2: false,
+        },
+        operationName: EPISODES_OP,
+        extensions: {
+          persistedQuery: { version: 1, sha256Hash: EPISODES_HASH },
+        },
+      };
+    }
+
+    function mapEpisodeItem(it, showId) {
+      const e = (it && it.entity && it.entity.data) || {};
+      const uri = e.uri || (it.entity && it.entity._uri) || null;
+      const epId = uri ? String(uri).split(":").pop() : e.id || null;
+      if (!epId) return null;
+
+      const durationMs =
+        (e.duration && e.duration.totalMilliseconds) || null;
+      // releaseDate.isoString is full ISO; take the date portion so
+      // normalizeReleaseDate's "day"-precision path handles it.
+      // Precision values seen live: MINUTE / HOUR / DAY. All reduce
+      // to "day" since the schema's coarsest meaningful unit here is
+      // start-of-day UTC.
+      const iso = (e.releaseDate && e.releaseDate.isoString) || null;
+      const datePart = iso ? iso.slice(0, 10) : null;
+
+      const ps = e.playedState || {};
+      const fullyPlayed = ps.state === "COMPLETED";
+      const resumeMs = ps.playPositionMilliseconds || 0;
+
+      return {
+        added_at: null,
+        episode: {
+          id: epId,
+          name: e.name || null,
+          release_date: datePart,
+          release_date_precision: "day",
+          duration_ms: durationMs,
+          resume_point: {
+            fully_played: fullyPlayed,
+            resume_position_ms: resumeMs,
+          },
+          show: { id: showId },
+        },
+      };
+    }
+
     progress("episodes", 0);
     const savedEpisodes = [];
+    const episodeFetchDiagnostics = [];
+    // Aggregate playedState counts across all episodes seen in the
+    // raw response (BEFORE our mapper transforms it). This is the
+    // data we need to debug "no in-progress episodes appear" — if
+    // STARTED never shows up here, the API isn't returning it for
+    // this user's account/token.
+    const stateCounts = {};
+    const playedSamples = []; // first 3 with state != NOT_STARTED
+    for (let s = 0; s < savedShows.length; s++) {
+      const show = savedShows[s];
+      const showId = show.show && show.show.id;
+      if (!showId) {
+        episodeFetchDiagnostics.push({ showIdx: s, reason: "no showId" });
+        continue;
+      }
+      const showUri = `spotify:show:${showId}`;
+      let eOffset = 0;
+      let eGuard = 0;
+      let pagesFetched = 0;
+      let episodesFromThisShow = 0;
+      let lastErr = null;
+      while (eOffset < EPISODES_PER_SHOW_CAP && eGuard < 20) {
+        eGuard += 1;
+        let j;
+        try {
+          j = await pathfinder(episodesBody(showUri, eOffset));
+        } catch (err) {
+          lastErr = String((err && err.message) || err);
+          break;
+        }
+        const items =
+          (j && j.data && j.data.podcastUnionV2 &&
+            j.data.podcastUnionV2.episodesV2 &&
+            j.data.podcastUnionV2.episodesV2.items) ||
+          [];
+        if (items.length === 0) {
+          if (pagesFetched === 0) {
+            lastErr =
+              "empty items[] at offset 0; data keys = " +
+              JSON.stringify(Object.keys((j && j.data) || {})) +
+              "; raw = " + JSON.stringify(j).slice(0, 200);
+          }
+          break;
+        }
+        pagesFetched += 1;
+        for (const it of items) {
+          const ps = it && it.entity && it.entity.data &&
+            it.entity.data.playedState;
+          const stateKey = (ps && ps.state) || "MISSING";
+          stateCounts[stateKey] = (stateCounts[stateKey] || 0) + 1;
+          // Keep up to 3 samples that aren't NOT_STARTED so we can
+          // see the shape of in-progress / completed data.
+          if (stateKey !== "NOT_STARTED" && playedSamples.length < 3) {
+            playedSamples.push({
+              uri:
+                (it.entity && (it.entity._uri || it.entity.data.uri)) || null,
+              name:
+                (it.entity && it.entity.data && it.entity.data.name) ||
+                null,
+              playedState: ps,
+            });
+          }
+          // queryPodcastEpisodes returns the show's whole back catalogue.
+          // Only episodes the user actually engaged with carry a resume
+          // position or completion to migrate; NOT_STARTED/MISSING ones
+          // would just bloat the document and the import's title-match pass.
+          // (Counts above still cover every state for diagnostics.)
+          if (stateKey !== "STARTED" && stateKey !== "COMPLETED") {
+            continue;
+          }
+          const mapped = mapEpisodeItem(it, showId);
+          if (mapped) {
+            savedEpisodes.push(mapped);
+            episodesFromThisShow += 1;
+          }
+        }
+        progress("episodes", savedEpisodes.length, false, {
+          showIdx: s + 1,
+          showCount: savedShows.length,
+        });
+        if (items.length < PAGE_LIMIT) break;
+        eOffset += PAGE_LIMIT;
+        await new Promise((res) => setTimeout(res, 200));
+      }
+      episodeFetchDiagnostics.push({
+        showId,
+        pagesFetched,
+        episodes: episodesFromThisShow,
+        lastErr,
+      });
+    }
     progress("episodes", savedEpisodes.length, true);
 
     clearCapturedState();
-    return { me, savedShows, savedEpisodes, tokenSource: tk.source };
+    return {
+      me,
+      savedShows,
+      savedEpisodes,
+      tokenSource: tk.source,
+      episodeFetchDiagnostics,
+      playedStateCounts: stateCounts,
+      playedStateSamples: playedSamples,
+    };
+  } catch (err) {
+    clearCapturedState();
+    return { error: String((err && err.message) || err) };
+  }
+}
+
+// ----- the function that runs inside www.youtube.com -----
+//
+// Serialized by chrome.scripting.executeScript and run in the target
+// tab's ISOLATED world. Self-contained: no imports, no outer refs.
+// `podcastsTabParams`, `feChannelsId`, `feHistoryId` are passed as args
+// since the function can't see module-scope constants.
+//
+// Strategy:
+//   1. Read captured auth from sessionStorage (the youtube-hook content
+//      script populates it during page bootstrap).
+//   2. POST /youtubei/v1/browse with browseId=FEchannels to list every
+//      channel the user is subscribed to. Paginate via continuation.
+//   3. For each channel, POST browse with browseId=<channelId> and
+//      params=<podcastsTabParams> ("podcasts" tab). Each lockupViewModel
+//      with contentType=LOCKUP_CONTENT_TYPE_PODCAST is a podcast
+//      playlist the user follows.
+//   4. For each podcast playlist, POST browse with browseId=VL<plid>
+//      to enumerate the episodes (videos).
+//   5. POST browse FEhistory and harvest resume positions per videoId
+//      from thumbnailOverlayResumePlaybackRenderer (and fully-played
+//      hints). Pages capped at HISTORY_PAGE_CAP to avoid pulling the
+//      user's entire YouTube history.
+//   6. Return { identity, podcasts: [...shaped...], videos: [...shaped...] }.
+async function fetchYouTubeLibraryInTab(
+  podcastsTabParams,
+  feChannelsId,
+  feHistoryId,
+) {
+  const AUTH_KEY = "portcast_yt_authorization";
+  const VISITOR_KEY = "portcast_yt_visitor_id";
+  const CLIENT_NAME_KEY = "portcast_yt_client_name";
+  const CLIENT_VERSION_KEY = "portcast_yt_client_version";
+  const AUTHUSER_KEY = "portcast_yt_authuser";
+  const AT_KEY = "portcast_yt_captured_at";
+  const BODY_CONTEXT_KEY = "portcast_yt_request_context";
+
+  const INTERTUBE_URL = "/youtubei/v1/browse?prettyPrint=false";
+  const HISTORY_PAGE_CAP = 6; // ~6 * 30 ≈ 180 most recent history items
+  const CHANNEL_CONCURRENCY = 1; // sequential — YouTube rate-limits hard
+  const COURTESY_DELAY_MS = 250;
+
+  function progress(phase, count, done, extra) {
+    try {
+      chrome.runtime.sendMessage({
+        type: "youtube-progress",
+        progress: { phase, count, done, ...(extra || {}) },
+      });
+    } catch {}
+  }
+
+  function readCapturedAuth() {
+    try {
+      const auth = sessionStorage.getItem(AUTH_KEY);
+      if (!auth) return null;
+      return {
+        authorization: auth,
+        visitorId: sessionStorage.getItem(VISITOR_KEY) || null,
+        clientName: sessionStorage.getItem(CLIENT_NAME_KEY) || "1",
+        clientVersion:
+          sessionStorage.getItem(CLIENT_VERSION_KEY) || null,
+        authUser: sessionStorage.getItem(AUTHUSER_KEY) || "0",
+        contextStr: sessionStorage.getItem(BODY_CONTEXT_KEY) || null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function clearCapturedState() {
+    try {
+      sessionStorage.removeItem(AUTH_KEY);
+      sessionStorage.removeItem(VISITOR_KEY);
+      sessionStorage.removeItem(CLIENT_NAME_KEY);
+      sessionStorage.removeItem(CLIENT_VERSION_KEY);
+      sessionStorage.removeItem(AUTHUSER_KEY);
+      sessionStorage.removeItem(AT_KEY);
+      sessionStorage.removeItem(BODY_CONTEXT_KEY);
+    } catch {}
+  }
+
+  async function waitForFreshAuthCapture(timeoutMs) {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      try {
+        const at = parseInt(
+          sessionStorage.getItem(AT_KEY) || "0",
+          10,
+        );
+        if (at >= start) {
+          const t = readCapturedAuth();
+          if (t) return t;
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    return null;
+  }
+
+  async function obtainAuth() {
+    progress("token");
+    const cached = readCapturedAuth();
+    if (cached && cached.clientVersion) return cached;
+
+    progress("token-waiting");
+    const fresh = await waitForFreshAuthCapture(10000);
+    if (fresh) return fresh;
+
+    if (cached) return cached; // last-resort, no clientVersion
+
+    return null;
+  }
+
+  function buildContext(auth) {
+    // Prefer the page's own context (captured from a real outgoing
+    // body); the client/user/request subkeys carry validation values
+    // (clientFormFactor, screenWidthPoints, etc.) we can't easily
+    // guess. Fall back to a minimal context if we never saw one.
+    if (auth.contextStr) {
+      try {
+        return JSON.parse(auth.contextStr);
+      } catch {}
+    }
+    return {
+      client: {
+        clientName: "WEB",
+        clientVersion: auth.clientVersion || "2.20260529.01.00",
+        visitorData: auth.visitorId || undefined,
+        platform: "DESKTOP",
+        hl: "en",
+        gl: "US",
+      },
+      user: { lockedSafetyMode: false },
+      request: { useSsl: true },
+    };
+  }
+
+  function formatDuration(sec) {
+    if (sec < 60) return `${sec} seconds`;
+    if (sec < 3600) {
+      const m = Math.ceil(sec / 60);
+      return `about ${m} minute${m === 1 ? "" : "s"}`;
+    }
+    const h = Math.ceil(sec / 3600);
+    return `about ${h} hour${h === 1 ? "" : "s"}`;
+  }
+
+  async function innertubeBrowse(auth, body) {
+    const headers = {
+      "Content-Type": "application/json",
+      Authorization: auth.authorization,
+      "X-Goog-AuthUser": auth.authUser || "0",
+      "X-Origin": "https://www.youtube.com",
+      "X-Youtube-Client-Name": auth.clientName || "1",
+      "X-Youtube-Client-Version":
+        auth.clientVersion || "2.20260529.01.00",
+    };
+    if (auth.visitorId) headers["X-Goog-Visitor-Id"] = auth.visitorId;
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const r = await fetch(INTERTUBE_URL, {
+        method: "POST",
+        headers,
+        credentials: "include",
+        body: JSON.stringify(body),
+      });
+
+      if (r.status === 429) {
+        let waitSec = parseInt(r.headers.get("Retry-After") || "30", 10);
+        if (!Number.isFinite(waitSec) || waitSec < 1) waitSec = 30;
+        if (attempt === 0 && waitSec <= 30) {
+          progress("rate-limited", waitSec);
+          await new Promise((res) => setTimeout(res, waitSec * 1000));
+          continue;
+        }
+        throw new Error(
+          `YouTube rate-limited this request (HTTP 429). ` +
+            `Try again in ${formatDuration(waitSec)}.`,
+        );
+      }
+
+      if (r.status === 401 || r.status === 403) {
+        const t = await r.text().catch(() => "");
+        throw new Error(
+          `YouTube rejected the request (HTTP ${r.status}). The ` +
+            `captured Authorization header may have expired (SAPISIDHASH ` +
+            `has a ~30 min window). Reload www.youtube.com (signed in) ` +
+            `and Export again. ${t.slice(0, 120)}`,
+        );
+      }
+
+      if (!r.ok) {
+        const t = await r.text().catch(() => "");
+        throw new Error(`InnerTube ${r.status}: ${t.slice(0, 200)}`);
+      }
+
+      return r.json();
+    }
+    throw new Error("InnerTube: retry budget exhausted.");
+  }
+
+  // ----- deep-walk helpers (response shapes are nested) -----
+  function findAll(node, key, depth, results, max) {
+    depth = depth || 0;
+    results = results || [];
+    max = max || 1000;
+    if (depth > 18 || !node || results.length >= max) return results;
+    if (typeof node === "object" && !Array.isArray(node)) {
+      if (key in node) results.push(node[key]);
+      for (const k of Object.keys(node))
+        findAll(node[k], key, depth + 1, results, max);
+    } else if (Array.isArray(node)) {
+      for (const it of node) findAll(it, key, depth + 1, results, max);
+    }
+    return results;
+  }
+
+  // ----- step 1: subscribed channels (FEchannels) -----
+  async function fetchSubscribedChannels(auth) {
+    const channels = [];
+    const seen = new Set();
+    let continuation = null;
+    let guard = 0;
+
+    do {
+      const body = continuation
+        ? { context: buildContext(auth), continuation }
+        : { context: buildContext(auth), browseId: feChannelsId };
+      const j = await innertubeBrowse(auth, body);
+
+      // channelRenderer is the canonical shape on this page.
+      const renderers = findAll(j, "channelRenderer");
+      for (const r of renderers) {
+        const id = r.channelId;
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        const title =
+          (r.title && (r.title.simpleText ||
+            (r.title.runs || [])
+              .map((x) => x.text)
+              .join(""))) ||
+          null;
+        const thumb =
+          r.thumbnail &&
+          r.thumbnail.thumbnails &&
+          r.thumbnail.thumbnails[r.thumbnail.thumbnails.length - 1] &&
+          r.thumbnail.thumbnails[r.thumbnail.thumbnails.length - 1].url;
+        channels.push({ channelId: id, title, imageUrl: thumb || null });
+      }
+
+      // Continuation tokens for the SECOND+ page.
+      const conts = findAll(j, "continuationCommand");
+      continuation = (conts[0] && conts[0].token) || null;
+      progress("channels", channels.length);
+      guard += 1;
+      if (guard > 80) break; // hard cap: 80 pages * 30 ≈ 2400 channels
+      await new Promise((r) => setTimeout(r, COURTESY_DELAY_MS));
+    } while (continuation);
+
+    progress("channels", channels.length, true);
+    return channels;
+  }
+
+  // ----- step 2: podcast playlists per channel -----
+  async function fetchPodcastPlaylists(auth, channel) {
+    const body = {
+      context: buildContext(auth),
+      browseId: channel.channelId,
+      params: podcastsTabParams,
+    };
+    const j = await innertubeBrowse(auth, body);
+
+    // If the channel has no Podcasts tab, the response either errors
+    // out cleanly or returns an empty content section. Either way:
+    // lockupViewModel items keyed by contentType=PODCAST is the marker.
+    const lockups = findAll(j, "lockupViewModel");
+    const out = [];
+    for (const lv of lockups) {
+      if (lv.contentType !== "LOCKUP_CONTENT_TYPE_PODCAST") continue;
+      const playlistId = lv.contentId;
+      if (!playlistId) continue;
+      const title =
+        (lv.metadata &&
+          lv.metadata.lockupMetadataViewModel &&
+          lv.metadata.lockupMetadataViewModel.title &&
+          lv.metadata.lockupMetadataViewModel.title.content) ||
+        null;
+      const sources =
+        (lv.contentImage &&
+          lv.contentImage.collectionThumbnailViewModel &&
+          lv.contentImage.collectionThumbnailViewModel.primaryThumbnail &&
+          lv.contentImage.collectionThumbnailViewModel.primaryThumbnail
+            .thumbnailViewModel &&
+          lv.contentImage.collectionThumbnailViewModel.primaryThumbnail
+            .thumbnailViewModel.image &&
+          lv.contentImage.collectionThumbnailViewModel.primaryThumbnail
+            .thumbnailViewModel.image.sources) ||
+        [];
+      const imageUrl = (sources[sources.length - 1] || {}).url || null;
+      out.push({
+        playlistId,
+        title,
+        channelTitle: channel.title,
+        channelId: channel.channelId,
+        imageUrl,
+        // YouTube doesn't expose per-podcast subscribe date; inherit
+        // from when the user follows the channel. Currently null —
+        // FEchannels doesn't return a subscribed_at either.
+        subscribedAt: null,
+      });
+    }
+    return out;
+  }
+
+  // ----- step 3: episodes per podcast playlist -----
+  async function fetchPlaylistVideos(auth, playlist) {
+    const out = [];
+    let continuation = null;
+    let guard = 0;
+    do {
+      const body = continuation
+        ? { context: buildContext(auth), continuation }
+        : {
+            context: buildContext(auth),
+            browseId: "VL" + playlist.playlistId,
+          };
+      const j = await innertubeBrowse(auth, body);
+      const videos = findAll(j, "playlistVideoRenderer");
+      for (const v of videos) {
+        if (!v.videoId) continue;
+        const title =
+          (v.title &&
+            (v.title.simpleText ||
+              (v.title.runs || []).map((x) => x.text).join(""))) ||
+          null;
+        const durationSeconds = v.lengthSeconds
+          ? Number(v.lengthSeconds)
+          : null;
+        out.push({
+          videoId: v.videoId,
+          playlistId: playlist.playlistId,
+          title,
+          durationSeconds,
+          publishedAt: null,
+          resumePositionSeconds: 0,
+          fullyPlayed: false,
+        });
+      }
+      const conts = findAll(j, "continuationCommand");
+      continuation = (conts[0] && conts[0].token) || null;
+      guard += 1;
+      if (guard > 40) break; // 40 pages * 100 = 4000 videos / playlist cap
+      await new Promise((r) => setTimeout(r, COURTESY_DELAY_MS));
+    } while (continuation);
+    return out;
+  }
+
+  // ----- step 4: watch history → resume positions -----
+  async function fetchWatchHistoryResume(auth, neededVideoIds, diag) {
+    const resume = new Map();
+    let continuation = null;
+    let pages = 0;
+
+    while (pages < HISTORY_PAGE_CAP) {
+      const body = continuation
+        ? { context: buildContext(auth), continuation }
+        : { context: buildContext(auth), browseId: feHistoryId };
+      let j;
+      try {
+        j = await innertubeBrowse(auth, body);
+      } catch (e) {
+        diag.fetchError = String(e.message || e);
+        progress("history-error", 0, true, { message: diag.fetchError });
+        break;
+      }
+
+      // YouTube's 2026 FEhistory schema stores watched-video state in
+      // watchEndpoint nodes (verified live 2026-06-02 against this
+      // user's account):
+      //
+      //   { videoId: "abc", startTimeSeconds: 1234, params: "..." }
+      //     -> presence of startTimeSeconds > 0 means "resume from here"
+      //
+      //   { videoId: "abc" }   (no startTimeSeconds, no params)
+      //     -> presence in history page means "watched (probably
+      //        completed)"; YouTube clears the resume position once
+      //        the video reaches the end.
+      //
+      // The old shape (thumbnailOverlayResumePlaybackRenderer with
+      // percentDurationWatched) is now only used in the sidebar
+      // "watched videos" recommendation rail, not the main history.
+      //
+      // Walker strategy: find every node with a string videoId.
+      //   - If it has a numeric startTimeSeconds > 0: in_progress
+      //     at that position.
+      //   - If our wanted set contains it (it's a podcast episode
+      //     we're tracking) and it appears anywhere in this history
+      //     response: treat as watched (completed) unless an
+      //     in-progress entry overrides it.
+      // Dedup per videoId — prefer in_progress over completed if
+      // both signals show up for the same id.
+      const allVideoIds = new Set();
+      const watchedVideoIds = new Set(); // wanted ids seen in history
+      let watchEndpointsWithStart = 0;
+      (function walk(node, depth) {
+        if (depth > 22 || !node) return;
+        if (typeof node === "object" && !Array.isArray(node)) {
+          if (typeof node.videoId === "string") {
+            allVideoIds.add(node.videoId);
+            const isWanted = neededVideoIds.has(node.videoId);
+            const sts = node.startTimeSeconds;
+            if (typeof sts === "number" && Number.isFinite(sts) && sts > 0) {
+              watchEndpointsWithStart += 1;
+              if (isWanted) {
+                // First in-progress hit wins; ignore later duplicates
+                // since YouTube may echo the same watchEndpoint in
+                // multiple places (e.g. action menu + main entry).
+                if (!resume.has(node.videoId)) {
+                  resume.set(node.videoId, {
+                    seconds: sts,
+                    fullyPlayed: false,
+                  });
+                }
+              }
+            }
+            if (isWanted) watchedVideoIds.add(node.videoId);
+          }
+          for (const k of Object.keys(node)) walk(node[k], depth + 1);
+        } else if (Array.isArray(node)) {
+          for (const it of node) walk(it, depth + 1);
+        }
+      })(j, 0);
+
+      // Mark watched-but-not-in-progress wanted ids as completed.
+      // Only add if we didn't already capture an in_progress signal
+      // for this id during this or an earlier page.
+      for (const id of watchedVideoIds) {
+        if (!resume.has(id)) {
+          resume.set(id, { seconds: 0, fullyPlayed: true });
+        }
+      }
+
+      diag.allUniqueVideoIds = (diag.allUniqueVideoIds || 0) + allVideoIds.size;
+      diag.watchEndpointsWithStart =
+        (diag.watchEndpointsWithStart || 0) + watchEndpointsWithStart;
+      diag.matchedVideoIds += watchedVideoIds.size;
+      // (legacy fields kept for backwards comparison)
+      diag.totalVideoRenderers = diag.totalVideoRenderers || 0;
+      diag.resumeOverlaysFound = diag.resumeOverlaysFound || 0;
+      diag.containingRendererKeys = diag.containingRendererKeys || [];
+      diag.distinctOverlayShapes = diag.distinctOverlayShapes || [];
+      diag.matchedVideoIdsWithoutOverlayCheck =
+        (diag.matchedVideoIdsWithoutOverlayCheck || 0) +
+        watchedVideoIds.size;
+
+      pages += 1;
+      diag.pagesFetched = pages;
+      const conts = findAll(j, "continuationCommand");
+      continuation = (conts[0] && conts[0].token) || null;
+      progress("history", resume.size, false, { page: pages });
+      if (!continuation) break;
+      await new Promise((r) => setTimeout(r, COURTESY_DELAY_MS));
+    }
+    progress("history", resume.size, true);
+    return resume;
+  }
+
+  // ----- main orchestrator -----
+  try {
+    const auth = await obtainAuth();
+    if (!auth) {
+      clearCapturedState();
+      return {
+        error:
+          "Could not obtain YouTube auth headers. Reload " +
+          "www.youtube.com signed in, open /feed/channels, and " +
+          "Export again.",
+      };
+    }
+
+    // Identity. We don't have a dedicated /me — pull what we can from
+    // the page header.
+    let identity = { displayName: null, email: null, channelId: null };
+    try {
+      const av = document.querySelector("ytd-topbar-menu-button-renderer img");
+      if (av && av.alt) identity.displayName = av.alt;
+    } catch {}
+
+    const channels = await fetchSubscribedChannels(auth);
+
+    // Per channel: fetch its podcast playlists. Sequential to avoid
+    // tripping YouTube's rate limit. Errors per-channel are non-fatal.
+    progress("podcasts", 0);
+    const podcasts = [];
+    for (let i = 0; i < channels.length; i++) {
+      const ch = channels[i];
+      try {
+        const pls = await fetchPodcastPlaylists(auth, ch);
+        for (const p of pls) podcasts.push(p);
+      } catch (e) {
+        // Non-fatal: channel may not have a Podcasts tab.
+      }
+      progress("podcasts", podcasts.length, false, {
+        channelIdx: i + 1,
+        channels: channels.length,
+      });
+      await new Promise((r) => setTimeout(r, COURTESY_DELAY_MS));
+    }
+    progress("podcasts", podcasts.length, true);
+
+    // Episodes per podcast playlist.
+    progress("episodes", 0);
+    const videos = [];
+    for (let i = 0; i < podcasts.length; i++) {
+      const p = podcasts[i];
+      try {
+        const vs = await fetchPlaylistVideos(auth, p);
+        for (const v of vs) videos.push(v);
+      } catch (e) {
+        // Non-fatal: playlist may be private / region-locked.
+      }
+      progress("episodes", videos.length, false, {
+        playlistIdx: i + 1,
+        playlists: podcasts.length,
+      });
+      await new Promise((r) => setTimeout(r, COURTESY_DELAY_MS));
+    }
+    progress("episodes", videos.length, true);
+
+    // Resume positions from history.
+    const wanted = new Set(videos.map((v) => v.videoId));
+    const historyDiag = {
+      wantedVideoIds: wanted.size,
+      pagesFetched: 0,
+      totalVideoRenderers: 0,
+      allUniqueVideoIds: 0,
+      matchedVideoIds: 0,
+      matchedVideoIdsWithoutOverlayCheck: 0,
+      resumeOverlaysFound: 0,
+      distinctOverlayShapes: [],
+      containingRendererKeys: [],
+      matchedVideoIdPaths: [],
+      fetchError: null,
+      sampleRendererKeys: null,
+      sampleOverlayKeys: null,
+      sampleVideoId: null,
+      sampleOverlay: null,
+    };
+    const resume = await fetchWatchHistoryResume(auth, wanted, historyDiag);
+    for (const v of videos) {
+      const r = resume.get(v.videoId);
+      if (!r) continue;
+      v.fullyPlayed = r.fullyPlayed;
+      if (!r.fullyPlayed && r.seconds > 0) {
+        v.resumePositionSeconds = r.seconds;
+      }
+    }
+    historyDiag.resumeMatchesApplied = resume.size;
+
+    clearCapturedState();
+    return { identity, podcasts, videos, historyDiag };
   } catch (err) {
     clearCapturedState();
     return { error: String((err && err.message) || err) };
@@ -607,6 +1506,21 @@ function humanizeError(err) {
   if (!err) return "Unknown error.";
   const msg = String(err.message || err);
 
+  if (msg.indexOf("Could not obtain YouTube auth headers") !== -1) {
+    return msg;
+  }
+  if (msg.indexOf("YouTube rejected the request") !== -1) {
+    return msg;
+  }
+  if (msg.indexOf("YouTube rate-limited this request") !== -1) {
+    return msg;
+  }
+  if (/timed out waiting for YouTube to load/i.test(msg)) {
+    return (
+      "YouTube took too long to load. Open www.youtube.com manually " +
+      "first (signed in), then click Export."
+    );
+  }
   if (msg.indexOf("Could not obtain a Spotify api-partner token") !== -1) {
     return msg;
   }

@@ -9,12 +9,18 @@
 // origins).
 
 import * as spotify from "./platforms/spotify.js";
+import * as youtube from "./platforms/youtube.js";
 
 export const PLATFORMS = [
   {
     id: spotify.PLATFORM_ID,
     name: spotify.PLATFORM_NAME,
     module: spotify,
+  },
+  {
+    id: youtube.PLATFORM_ID,
+    name: youtube.PLATFORM_NAME,
+    module: youtube,
   },
 ];
 

@@ -13,10 +13,138 @@
 //
 // No `chrome.*`, no DOM. Reused in the Trimplayer mobile WebView.
 
-import { buildDocument } from "../portcast.js";
+import {
+  buildDocument,
+  cryptoRandomId,
+  normalizeReleaseDate,
+  stripNull,
+} from "../portcast.js";
 
 export const PLATFORM_ID = "spotify";
 export const PLATFORM_NAME = "Spotify";
+const SOURCE = "spotify";
+
+export function subscriptionFromSavedShow(saved, capturedAt) {
+  const show = saved.show || {};
+  const showId = show.id;
+  const images = show.images || [];
+  const imageUrl = images.length > 0 && images[0] ? images[0].url : null;
+
+  return stripNull({
+    subscriptionId: cryptoRandomId(),
+    title: show.name || "(untitled show)",
+    author: show.publisher || null,
+    imageUrl: imageUrl,
+    subscribedAt: saved.added_at || null,
+    platformRefs: showId ? [`spotify:show:${showId}`] : null,
+    updatedAt: capturedAt,
+  });
+}
+
+export function episodeFromSavedEpisode(saved, capturedAt) {
+  const ep = saved.episode || {};
+  const epId = ep.id;
+  const show = ep.show || {};
+  const showId = show.id;
+
+  // An episode with no Spotify ID, or detached from its show, is
+  // unaddressable on the import side — skip it rather than emit a
+  // broken reference. Matches the Python exporter behavior exactly.
+  if (!epId || !showId) return null;
+
+  const durationMs = ep.duration_ms;
+  const durationS =
+    typeof durationMs === "number" ? durationMs / 1000.0 : null;
+
+  const resume = ep.resume_point || {};
+  const fullyPlayed = Boolean(resume.fully_played);
+  const resumeMs = resume.resume_position_ms || 0;
+  let positionS = resumeMs ? resumeMs / 1000.0 : null;
+  let status;
+
+  if (fullyPlayed) {
+    status = "completed";
+    positionS = null;
+  } else if (positionS && positionS > 0) {
+    status = "in_progress";
+  } else {
+    status = "unplayed";
+    positionS = null;
+  }
+
+  return stripNull({
+    episodeStateId: cryptoRandomId(),
+    subscriptionRef: { platformRefs: [`spotify:show:${showId}`] },
+    platformRefs: [`spotify:episode:${epId}`],
+    title: ep.name || null,
+    publishedAt: normalizeReleaseDate(
+      ep.release_date,
+      ep.release_date_precision,
+    ),
+    durationSeconds: durationS,
+    status: status,
+    positionSeconds: positionS,
+    source: SOURCE,
+    capturedAt: capturedAt,
+    updatedAt: capturedAt,
+  });
+}
+
+export function ownerFromMe(me) {
+  if (!me) return null;
+  const displayName = me.display_name || null;
+  const email = me.email || null;
+  if (!displayName && !email) return null;
+  return stripNull({ displayName, email });
+}
+
+function spotifyCompleteness(ts) {
+  return [
+    {
+      section: "subscriptions",
+      source: SOURCE,
+      level: "full",
+      capturedAt: ts,
+      note: "All shows in the user's Spotify library at export time.",
+    },
+    {
+      section: "episodes",
+      source: SOURCE,
+      level: "full",
+      capturedAt: ts,
+      note:
+        "All episodes of every followed show, each with its " +
+        "playedState (NOT_STARTED / STARTED / COMPLETED) and resume " +
+        "position. No separate per-episode event log is available.",
+    },
+  ];
+}
+
+export function buildSpotifyDocument({
+  me,
+  savedShows,
+  savedEpisodes,
+  capturedAt,
+  generatorVersion,
+}) {
+  const ts = capturedAt; // buildDocument fills nowIso() if absent
+  const subscriptions = (savedShows || []).map((s) =>
+    subscriptionFromSavedShow(s, ts),
+  );
+  const episodes = [];
+  for (const saved of savedEpisodes || []) {
+    const ep = episodeFromSavedEpisode(saved, ts);
+    if (ep !== null) episodes.push(ep);
+  }
+  return buildDocument({
+    owner: ownerFromMe(me),
+    subscriptions,
+    episodes,
+    completeness: spotifyCompleteness(ts),
+    generatorVersion,
+    capturedAt: ts,
+  });
+}
 
 const TOKEN_URL =
   "https://open.spotify.com/get_access_token" +
@@ -164,7 +292,7 @@ export async function exportToPortCast({
     onProgress,
   );
 
-  const document = buildDocument({
+  const document = buildSpotifyDocument({
     me,
     savedShows,
     savedEpisodes,

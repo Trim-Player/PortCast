@@ -14,21 +14,23 @@
   <main id="states">
     <section id="state-idle" class="state visible">
       <p class="body">
-        Export your <strong>Spotify</strong> followed shows, saved episodes,
-        and resume positions to a <code>.portcast.json</code> file.
+        Export your followed shows, saved episodes, and resume positions
+        to a <code>.portcast.json</code> file.
       </p>
-      <button id="btn-export" class="primary">Export from Spotify</button>
+      <button id="btn-export-spotify" class="primary">Export from Spotify</button>
+      <button id="btn-export-youtube" class="primary">Export from YouTube</button>
       <p class="fine">
-        Runs entirely in your browser. Your Spotify data is never
-        sent to any server &mdash; including ours.
+        Runs entirely in your browser. Your data is never sent to any
+        server &mdash; including ours.
       </p>
     </section>
 
     <section id="state-not-signed-in" class="state">
-      <p class="body">
-        You&rsquo;re not signed in to Spotify in this browser.
+      <p class="body" id="not-signed-in-body">
+        You&rsquo;re not signed in.
       </p>
       <button id="btn-open-spotify" class="primary">Open Spotify</button>
+      <button id="btn-open-youtube" class="primary">Open YouTube</button>
       <p class="fine">
         Sign in, return here, and click the PortCast icon again.
       </p>
